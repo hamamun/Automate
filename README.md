@@ -76,49 +76,73 @@ UTC, so:
 - **Strategy Tester:** real UTC cannot be known, so the line reads `Session: unknown` instead
   of inventing a label. The broker's session table still decides open/closed normally.
 
-## What you should see
+## The panel
+
+The layout is the interface sketch from `automate.md` section 7. Fields whose data does
+not exist yet are drawn as labels with blank values, so the frame stays the same from stage
+to stage and only the values fill in.
 
 ```text
- AUTOMATE   stage 1 - discovery only   -   no orders
+ AUTOMATE    EURUSDm  |  Forex  |  Hedging  |
+ MARKET OPEN | Session: London (est.) | Spread: 8.0 pts
 
- EURUSDm        Forex               Hedging   spread 1.2 pts
+ TF     TREND  REGIME   SCORE  SIGNAL  TRADE STATUS
+ M5
+ M15
+ M30
 
- MARKET OPEN
- trading until 23:59 server (Mon)
- Session      London / New York   (est.)
- Cities       Tokyo 18:41  London 14:41  NY 09:41
- Server       2026.10.26 14:41  Mon   |   UTC 12:41
+ Selected:                    Entry:
+ SL:                          TP:
+ Entry timing:                TP estimate:
+ Size:                         Planned risk:
+ Combined exposure:
+ Diary:                        Unknown future costs:
 
- DISCOVERED
+ DISCOVERY
  Description  Euro vs US Dollar
- Path         Forex\EURUSDm
- Calc mode    Forex   |   sector: -
+ Path         Standard\Forex\EURUSDm
+ Calc mode    Forex   |   sector: Undefined
  Currencies   EUR / USD   account USD
- Price        1.08310 / 1.08322   digits 5
+ Price        1.11307 / 1.11315   digits 5
  Tick         0.00001   value 1.00 USD
- Volume       0.01 - 100.00   step 0.01   stops 0 pts
- Data         synced   M5 3200  M15 1066  M30 533 bars
+ Volume       0.01 - 200.00   step 0.01   stops 0 pts
+ Data         synced   M5 100259   M15 10013   M30 10036
 
- AUTO CONFIG
- Class        Forex   (name; path; calc mode)
+ SELF-CONFIG
+ Class        Forex   (path, name, ccy, calc, desc)
  Warm-up      200 bars   ready
  Stop buffer  2 ticks beyond a swing
- Spread gate  2.0 x typical   typical 1.2 pts (14 samples)
- Hour 14      9.1 pts (7 days)   recent 8.8 pts (200 bars)
- Adjust       typical hour x1.03 -> base profile
+ Spread gate  2.0 x typical   typical 8.0 pts (5 samples)
+ Hour 9       16.0 pts (12 days)   recent 15.0 pts (195 bars)
+ Adjust       typical hour x1.07 -> base profile
 
  BROKER SESSIONS
- Published    5 entries / week, 1 today
- Today        01:05-23:59
- Days         Mon Tue Wed Thu Fri
+ Published    6 entries / week, 1 today
+ Today        00:00-24:00
+ Days         Sun Mon Tue Wed Thu Fri
+
+ No signals, no orders, no positions in this build.
 ```
 
-The panel has **no size settings**: width and height are measured from the text actually
-drawn, so it shrinks to a handful of lines on a closed market or in the tester and grows
-when all sections are present. Colours are SimpleEA's (dark grey `C'48,48,48'`, Consolas 10,
-lime up, tomato down, silver neutral) plus amber for HOLD reasons and red for alerts.
+Columns match the sketch exactly: the timeframe table starts at characters 1, 8, 15, 24, 31
+and 39, and the two-column block puts its right column at character 30.
 
-A full dump is also printed to the **Experts** tab when the EA attaches.
+**Blank by design, not by accident:** the auto-trading flag, every trend / regime / score /
+signal column, the whole selected-plan block, exposure and the diary belong to later stages.
+They are present so the panel does not keep changing shape.
+
+### Look and feel
+
+- Same palette as SimpleEA: background `C'48,48,48'`, Consolas 10, white title, lime up,
+  tomato down, silver neutral; amber for HOLD reasons and red for alerts.
+- Row pitch is SimpleEA's `font size + 11` px, so both panels look identical at the same
+  font size. On a chart too short for that the pitch tightens automatically, never below the
+  measured text height plus two pixels.
+- The market state carries colour on its own row while the session and spread beside it stay
+  silver, so a red `MARKET CLOSED` does not turn the whole line red.
+- Width and height are measured from the text actually drawn. There are no panel inputs:
+  no X/Y, no width, no font size.
+- A full-day session reads `00:00-24:00` rather than the misleading `00:00-00:00`.
 
 ## What to check while testing
 
