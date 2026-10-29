@@ -144,6 +144,18 @@ They are present so the panel does not keep changing shape.
   no X/Y, no width, no font size.
 - A full-day session reads `00:00-24:00` rather than the misleading `00:00-00:00`.
 
+## Before compiling
+
+A preflight script checks the file for the errors MetaEditor would report:
+
+```bash
+python3 tools/preflight.py Automate.mq5
+```
+
+It catches unbalanced braces, duplicate file-scope declarations, duplicate functions,
+unresolved calls, invalid struct fields, stray `input` lines and non-ASCII text. It does not
+replace MetaEditor - it only makes the cheap mistakes visible before you compile.
+
 ## What to check while testing
 
 - The class label matches what the instrument really is.
