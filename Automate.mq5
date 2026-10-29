@@ -164,7 +164,11 @@ MarketState  g_m;
 
 string g_line[];       // panel text, one entry per drawn line
 color  g_lineClr[];    // colour per drawn line
-int    g_drawn = 0;    // lines currently on the chart
+int    g_lineSegFrom[];// first segment index of a coloured line, -1 = plain
+int    g_lineSegN[];   // how many segments that line has
+string g_segText[];    // segment text, concatenated into g_line[]
+color  g_segClr[];     // segment colour
+int    g_drawn = 0;    // labels currently on the chart
 
 SessionRec g_sess[MAX_SESSIONS];
 int        g_sessCount = 0;
@@ -1212,12 +1216,8 @@ void RefreshMarket()
 #define COL_RIGHT 30            // where the right-hand column starts
 #define ROW_EXTRA 11            // row pitch = font size + this (as SimpleEA)
 
-string g_line[];
-color  g_lineClr[];
-int    g_lineSegFrom[];         // -1 = plain line
-int    g_lineSegN[];
-string g_segText[];
-color  g_segClr[];
+//  g_line[], g_lineClr[], g_lineSegFrom[], g_lineSegN[], g_segText[]
+//  and g_segClr[] are declared once, in the GLOBAL STATE block above.
 
 void ResetLines()
 {
