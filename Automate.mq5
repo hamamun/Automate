@@ -551,28 +551,28 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    if(baseIso && profitIso)
    {
       sc[A_FOREX] += 2;
-      ev[A_FOREX] += "currencies;";
+      ev[A_FOREX] += "ccy, ";
    }
-   if(EqualsAny(bas, METAL_CODE))  { sc[A_METAL]  += 4; ev[A_METAL]  += "base ccy, "; }
-   if(EqualsAny(bas, CRYPTO_CODE)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "base ccy, "; }
+   if(EqualsAny(bas, METAL_CODE))  { sc[A_METAL]  += 4; ev[A_METAL]  += "base, "; }
+   if(EqualsAny(bas, CRYPTO_CODE)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "base, "; }
 
    // ---- calculation mode ----
    if(f.calcMode == (int)SYMBOL_CALC_MODE_FOREX ||
       f.calcMode == (int)SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE)
    {
       sc[A_FOREX] += 2;
-      ev[A_FOREX] += "calc mode;";
+      ev[A_FOREX] += "calc, ";
       sc[A_METAL] += 1;                       // metals are usually Forex-calculated
    }
    if(f.calcMode == (int)SYMBOL_CALC_MODE_CFDINDEX)
    {
       sc[A_INDEX] += 3;
-      ev[A_INDEX] += "calc mode, ";
+      ev[A_INDEX] += "calc, ";
    }
    if(f.calcMode == (int)SYMBOL_CALC_MODE_EXCH_STOCKS)
    {
       sc[A_STOCK] += 3;
-      ev[A_STOCK] += "calc mode, ";
+      ev[A_STOCK] += "calc, ";
    }
    if(f.calcMode == (int)SYMBOL_CALC_MODE_FUTURES)
    {
@@ -580,11 +580,11 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    }
 
    // ---- description and exchange metadata ----
-   if(HasToken(dsc, "GOLD|SILVER|PLATINUM|PALLADIUM"))  { sc[A_METAL]  += 3; ev[A_METAL]  += "description, "; }
-   if(HasToken(dsc, "BITCOIN|ETHEREUM|CRYPTO|DOGECOIN")){ sc[A_CRYPTO] += 3; ev[A_CRYPTO] += "description, "; }
-   if(HasToken(dsc, "CRUDE|BRENT|NATURAL GAS|WTI|OIL")) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "description, "; }
-   if(HasToken(dsc, "INDEX|INDICES"))                   { sc[A_INDEX]  += 2; ev[A_INDEX]  += "description, "; }
-   if(HasToken(dsc, " VS "))                            { sc[A_FOREX]  += 1; ev[A_FOREX]  += "description, "; }
+   if(HasToken(dsc, "GOLD|SILVER|PLATINUM|PALLADIUM"))  { sc[A_METAL]  += 3; ev[A_METAL]  += "desc, "; }
+   if(HasToken(dsc, "BITCOIN|ETHEREUM|CRYPTO|DOGECOIN")){ sc[A_CRYPTO] += 3; ev[A_CRYPTO] += "desc, "; }
+   if(HasToken(dsc, "CRUDE|BRENT|NATURAL GAS|WTI|OIL")) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "desc, "; }
+   if(HasToken(dsc, "INDEX|INDICES"))                   { sc[A_INDEX]  += 2; ev[A_INDEX]  += "desc, "; }
+   if(HasToken(dsc, " VS "))                            { sc[A_FOREX]  += 1; ev[A_FOREX]  += "desc, "; }
    if(HasToken(sec, SECTOR_STOCK))                      { sc[A_STOCK]  += 2; ev[A_STOCK]  += "sector, "; }
    if(HasToken(ind, INDUSTRY_STOCK))                    { sc[A_STOCK]  += 2; ev[A_STOCK]  += "industry, "; }
 
@@ -898,6 +898,21 @@ int CountSessionsForDay(int dow)
 
 //  How many session entries does the broker publish today, and what
 //  are the first two windows?
+//  One session window as text.  A full-day session ends exactly at
+//  midnight, which Hhmm() would print as 00:00 - reading like a
+//  zero-length window.  Print the end of the day as 24:00 instead.
+string SessionRange(int startSec, int durSec)
+{
+   long start = (long)startSec;
+   long end   = start + (long)durSec;
+
+   string left = Hhmm(start);
+
+   if(durSec >= 86400) return(left + "-24:00");
+   if(end == 86400)    return(left + "-24:00");
+   return(left + "-" + Hhmm(end));
+}
+
 string TodayWindows(int dow, int maxShown)
 {
    string s = "";
@@ -908,9 +923,8 @@ string TodayWindows(int dow, int maxShown)
       if(g_sess[i].dow != dow) continue;
       if(shown >= maxShown) { s += ", ..."; break; }
 
-      long e = (long)g_sess[i].startSec + (long)g_sess[i].durSec;
       s += (shown > 0 ? ", " : "");
-      s += Hhmm(g_sess[i].startSec) + "-" + Hhmm(e);
+      s += SessionRange(g_sess[i].startSec, g_sess[i].durSec);
       shown++;
    }
 
@@ -1182,12 +1196,37 @@ void RefreshMarket()
 }
 
 //==================================================================
-//  PANEL - built from lines, sized to fit them
+//  PANEL
 //==================================================================
+//  The layout follows the interface sketch in automate.md section 7.
+//  Fields whose data does not exist yet - trend, regime, score, signal,
+//  trade status, the selected plan, exposure and the diary - are drawn
+//  as labels with blank values.  The frame is the same from stage to
+//  stage; only the values fill in as each stage is built.
+//
+//  A line is either plain or made of coloured segments, so the market
+//  state can be red or green while the session and spread on the same
+//  line stay silver.  Every drawn label is numbered continuously,
+//  which makes removing surplus objects after a redraw trivial.
+//==================================================================
+#define COL_RIGHT 30            // where the right-hand column starts
+#define ROW_EXTRA 11            // row pitch = font size + this (as SimpleEA)
+
+string g_line[];
+color  g_lineClr[];
+int    g_lineSegFrom[];         // -1 = plain line
+int    g_lineSegN[];
+string g_segText[];
+color  g_segClr[];
+
 void ResetLines()
 {
    ArrayResize(g_line, 0);
    ArrayResize(g_lineClr, 0);
+   ArrayResize(g_lineSegFrom, 0);
+   ArrayResize(g_lineSegN, 0);
+   ArrayResize(g_segText, 0);
+   ArrayResize(g_segClr, 0);
 }
 
 void AddLine(string text, color clr)
@@ -1195,16 +1234,61 @@ void AddLine(string text, color clr)
    int n = ArraySize(g_line);
    ArrayResize(g_line, n + 1);
    ArrayResize(g_lineClr, n + 1);
-   g_line[n]    = text;
-   g_lineClr[n] = clr;
+   ArrayResize(g_lineSegFrom, n + 1);
+   ArrayResize(g_lineSegN, n + 1);
+   g_line[n]        = text;
+   g_lineClr[n]     = clr;
+   g_lineSegFrom[n] = -1;
+   g_lineSegN[n]    = 0;
+}
+
+void AddSegLine(string &texts[], color &clrs[])
+{
+   int nseg = ArraySize(texts);
+   if(nseg <= 0) { AddLine("", CLR_TEXT); return; }
+
+   string full = "";
+   for(int i = 0; i < nseg; i++) full += texts[i];
+
+   int n = ArraySize(g_line);
+   ArrayResize(g_line, n + 1);
+   ArrayResize(g_lineClr, n + 1);
+   ArrayResize(g_lineSegFrom, n + 1);
+   ArrayResize(g_lineSegN, n + 1);
+   g_line[n]        = full;
+   g_lineClr[n]     = CLR_TEXT;
+   g_lineSegFrom[n] = ArraySize(g_segText);
+   g_lineSegN[n]    = nseg;
+
+   for(int i = 0; i < nseg; i++)
+   {
+      int k = ArraySize(g_segText);
+      ArrayResize(g_segText, k + 1);
+      ArrayResize(g_segClr, k + 1);
+      g_segText[k] = texts[i];
+      g_segClr[k]  = clrs[i];
+   }
 }
 
 void SectionTitle(string text)
 {
-   string t = " " + text + " ";
-   int want = 40;
-   if(StringLen(t) < want) t += Spaces(want - StringLen(t));
-   AddLine(t, CLR_SECTION);
+   AddLine(" " + text, CLR_SECTION);
+}
+
+//  Two columns at the exact positions used by the automate.md sketch:
+//  left text at column 1, right text at column COL_RIGHT.
+string TwoCol(string left, string right)
+{
+   return(" " + Pad(left, COL_RIGHT - 1) + right);
+}
+
+//  The timeframe table: TF, TREND, REGIME, SCORE, SIGNAL, TRADE STATUS
+//  at columns 1, 8, 15, 24, 31 and 39.
+string TableRow(string tf, string trend, string regime,
+                string score, string signal, string status)
+{
+   return(" " + Pad(tf, 7) + Pad(trend, 7) + Pad(regime, 9) +
+          Pad(score, 7) + Pad(signal, 8) + status);
 }
 
 int LaneBars(ENUM_TIMEFRAMES tf)
@@ -1223,48 +1307,70 @@ void BuildPanel()
    int hour = st.hour;
    if(hour < 0 || hour > 23) hour = 0;
 
-   // ---------------- header ----------------
-   AddLine(" AUTOMATE   " + EA_STAGE + "   -   no orders", CLR_TITLE);
-   AddLine("", CLR_TEXT);
-
-   string head = " " + Pad(g_f.name, 14) + " " + Pad(g_p.label, 20) +
-                 Pad(AccountModeText(), 10) +
-                 StringFormat("spread %.1f pts",
-                              (g_f.point > 0.0 ? g_f.spreadPrice / g_f.point : 0.0));
-   AddLine(head, CLR_VALUE);
-   AddLine("", CLR_TEXT);
-
-   // ---------------- market ----------------
-   AddLine(" " + g_m.headline, g_m.clr);
-   AddLine(" " + g_m.detail, CLR_TEXT);
-
-   if(g_m.code == MS_CLOSED)
-      AddLine(" Nothing to do while the market is closed.", CLR_DIM);
-   if(g_m.modeNote != "")
-      AddLine(L("Broker", g_m.modeNote), CLR_HOLD);
-
    datetime utcNow = 0;
    string   srcNote = "";
    bool utcKnown = ResolveUtc(serverNow, utcNow, srcNote);
 
-   if(utcKnown)
-   {
-      AddLine(L("Session", SessionLabel(utcNow) + "   (est.)"), CLR_TEXT);
-      AddLine(L("Cities", SessionClockLine(utcNow)), CLR_DIM);
-   }
-   else
-   {
-      AddLine(L("Session", "unknown - " + srcNote), CLR_DIM);
-   }
+   // ---------------------------------------------------------------
+   //  Row 1 - identity
+   //  symbol | class | account mode | auto trading (not built yet)
+   // ---------------------------------------------------------------
+   AddLine(" AUTOMATE    " + g_f.name + "  |  " + g_p.label +
+           "  |  " + AccountModeText() + "  |  ", CLR_TITLE);
 
-   AddLine(L("Server", TimeToString(serverNow, TIME_DATE | TIME_MINUTES) + "  " +
-                      WeekdayShort(serverNow) +
-                      (utcKnown ? ("   |   UTC " + TimeToString(utcNow, TIME_MINUTES)) : "")),
-           CLR_DIM);
+   // ---------------------------------------------------------------
+   //  Row 2 - market state | session | spread
+   //  Only the state carries colour; the rest of the line stays
+   //  silver so a red "MARKET CLOSED" does not shout the whole row.
+   // ---------------------------------------------------------------
+   double sprPts = (g_f.point > 0.0) ? g_f.spreadPrice / g_f.point : 0.0;
+   string sessTxt = utcKnown ? (SessionLabel(utcNow) + " (est.)") : "unknown";
+
+   string segTxt[3];
+   color  segClr[3];
+   segTxt[0] = " " + g_m.headline;
+   segClr[0] = g_m.clr;
+   segTxt[1] = " | Session: " + sessTxt;
+   segClr[1] = CLR_TEXT;
+   segTxt[2] = " | Spread: " + DoubleToString(sprPts, 1) + " pts";
+   segClr[2] = CLR_TEXT;
+   AddSegLine(segTxt, segClr);
+
+   //  The "until ..." / "next open ..." detail only earns its own row
+   //  when the market is not simply open; on a live symbol row 2 has
+   //  already said everything.
+   if(g_m.code != MS_OPEN)
+      AddLine(" " + g_m.detail, (g_m.code == MS_CLOSED ? CLR_HOLD : CLR_DIM));
+
+   if(g_m.modeNote != "")
+      AddLine(L("Broker", g_m.modeNote), CLR_HOLD);
+
    AddLine("", CLR_TEXT);
 
-   // ---------------- discovery ----------------
-   SectionTitle("DISCOVERED");
+   // ---------------------------------------------------------------
+   //  Timeframe table - values arrive with the signal stage
+   // ---------------------------------------------------------------
+   AddLine(TableRow("TF", "TREND", "REGIME", "SCORE", "SIGNAL", "TRADE STATUS"), CLR_SECTION);
+   AddLine(TableRow("M5",  "", "", "", "", ""), CLR_DIM);
+   AddLine(TableRow("M15", "", "", "", "", ""), CLR_DIM);
+   AddLine(TableRow("M30", "", "", "", "", ""), CLR_DIM);
+   AddLine("", CLR_TEXT);
+
+   // ---------------------------------------------------------------
+   //  Selected lane - blanks until the plan stage exists
+   // ---------------------------------------------------------------
+   AddLine(TwoCol("Selected:", "Entry:"), CLR_DIM);
+   AddLine(TwoCol("SL:", "TP:"), CLR_DIM);
+   AddLine(TwoCol("Entry timing:", "TP estimate:"), CLR_DIM);
+   AddLine(TwoCol("Size:", "Planned risk:"), CLR_DIM);
+   AddLine(TwoCol("Combined exposure:", ""), CLR_DIM);
+   AddLine(TwoCol("Diary:", "Unknown future costs:"), CLR_DIM);
+   AddLine("", CLR_TEXT);
+
+   // ---------------------------------------------------------------
+   //  What this stage discovered
+   // ---------------------------------------------------------------
+   SectionTitle("DISCOVERY");
 
    AddLine(L("Description", g_f.desc == "" ? "-" : g_f.desc), CLR_TEXT);
    AddLine(L("Path", g_f.path == "" ? "-" : g_f.path), CLR_TEXT);
@@ -1289,20 +1395,22 @@ void BuildPanel()
                       "   stops " + IntegerToString(g_f.stopsLevel) + " pts"), CLR_TEXT);
 
    AddLine(L("Data", (g_f.synced ? "synced" : "NOT synced") +
-                      StringFormat("   M5 %d  M15 %d  M30 %d bars",
+                      StringFormat("   M5 %d   M15 %d   M30 %d",
                                    LaneBars(PERIOD_M5),
                                    LaneBars(PERIOD_M15),
                                    LaneBars(PERIOD_M30))),
            (g_f.synced ? CLR_TEXT : CLR_HOLD));
    AddLine("", CLR_TEXT);
 
-   // ---------------- self-configuration ----------------
-   SectionTitle("AUTO CONFIG");
+   // ---------------------------------------------------------------
+   //  What it configured for itself
+   // ---------------------------------------------------------------
+   SectionTitle("SELF-CONFIG");
 
    AddLine(L("Class", g_p.label + "   (" + g_p.basis + ")"),
            (g_p.unconfirmed ? CLR_HOLD : CLR_VALUE));
 
-   int m5 = LaneBars(PERIOD_M5);
+   int  m5 = LaneBars(PERIOD_M5);
    bool warmOk = (m5 >= g_p.warmupBars);
    AddLine(L("Warm-up", IntegerToString(g_p.warmupBars) + " bars   " +
                         (warmOk ? "ready" : "DATA WAIT")),
@@ -1333,7 +1441,9 @@ void BuildPanel()
    AddLine(L("Adjust", g_p.note == "" ? "base profile" : g_p.note), CLR_DIM);
    AddLine("", CLR_TEXT);
 
-   // ---------------- broker sessions ----------------
+   // ---------------------------------------------------------------
+   //  The broker's own session table
+   // ---------------------------------------------------------------
    SectionTitle("BROKER SESSIONS");
 
    AddLine(L("Published", (g_sessCount > 0
@@ -1349,20 +1459,29 @@ void BuildPanel()
 
    AddLine("", CLR_TEXT);
    AddLine(" No signals, no orders, no positions in this build.", CLR_DIM);
-   AddLine(" Algo trading permission is irrelevant here.", CLR_DIM);
 }
 
-int MeasureWidth(string s)
+//  Rendered width of one character at a font size, using the real
+//  screen DPI.  Same estimate SimpleEA uses, rounded up so the panel
+//  is never narrower than the glyphs it holds.
+int CharW(int size)
 {
+   if(size < 6) size = 6;
+   int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
+   if(dpi < 72) dpi = 96;
+   double em = (double)size * (double)dpi / 72.0;
+   return((int)MathCeil(em * 0.55));
+}
+
+int TextWidth(string s)
+{
+   if(s == "") return(0);
+
    uint w = 0, h = 0;
    int measured = 0;
-
    if(TextGetSize(s, w, h) && w > 0) measured = (int)w;
 
-   //  Monospace estimate as a safety floor so text is never clipped on
-   //  a scaled (high-DPI) chart where measurement can come back small.
-   int est = (int)(StringLen(s) * FONT_SIZE * 0.80);
-
+   int est = StringLen(s) * CharW(FONT_SIZE);
    return(measured > est ? measured : est);
 }
 
@@ -1389,8 +1508,13 @@ void EnsureRect(string name, int x, int y, int w, int h, color bg, color border)
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
 }
 
+//  A label is never given an empty string.  A freshly created chart
+//  object carries its type name as the description, so an empty text
+//  renders the literal word "Label" - a single space avoids that.
 void EnsureLabel(string name, int x, int y, string text, color clr)
 {
+   string shown = (text == "") ? " " : text;
+
    if(ObjectFind(0, name) < 0)
    {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -1401,57 +1525,91 @@ void EnsureLabel(string name, int x, int y, string text, color clr)
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
       ObjectSetInteger(0, name, OBJPROP_ZORDER, 10);
       ObjectSetString(0, name, OBJPROP_FONT, FONT_NAME);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, FONT_SIZE);
    }
 
+   //  Set on every update, not only at creation: the font then repairs
+   //  itself if the object was left behind by an older build.
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, FONT_SIZE);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
 
-   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
+   if(ObjectGetString(0, name, OBJPROP_TEXT) != shown)
+      ObjectSetString(0, name, OBJPROP_TEXT, shown);
 }
 
 void DrawPanel()
 {
+   //  10 point font, exactly as SimpleEA renders it.
    TextSetFont(FONT_NAME, -FONT_SIZE * 10);
 
    int count = ArraySize(g_line);
    if(count <= 0) return;
+
+   //  Row pitch defaults to SimpleEA's (font size + 11 px) so the two
+   //  panels look the same on the same chart at the same font size.  On
+   //  a chart too short for that, the pitch tightens - but never below
+   //  the measured text height + 2 px, where lines would touch.
+   int rowH = FONT_SIZE + ROW_EXTRA;
+
+   uint mw = 0, mh = 0;
+   int textH = (TextGetSize("Ag", mw, mh) && mh > 0) ? (int)mh : FONT_SIZE + 3;
+   int floorH = textH + 2;
+
+   int chartH = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(chartH > 200)
+   {
+      int avail = chartH - PANEL_Y - 8 - PANEL_PAD * 2;
+      int fit   = avail / (count > 0 ? count : 1);
+      if(fit < rowH) rowH = (fit > floorH ? fit : floorH);
+   }
 
    //  Width and height come from the text actually present, so the
    //  panel is never a fixed box: it grows and shrinks by itself.
    int maxW = 0;
    for(int i = 0; i < count; i++)
    {
-      int w = MeasureWidth(g_line[i]);
+      int w = TextWidth(g_line[i]);
       if(w > maxW) maxW = w;
    }
 
-   uint tw = 0, th = 0;
-   int lineH = FONT_SIZE * 2 + LINE_EXTRA;
-   if(TextGetSize("Ag", tw, th) && th > 0) lineH = (int)th + LINE_EXTRA;
-
    int panelW = maxW + PANEL_PAD * 2;
-   int panelH = count * lineH + PANEL_PAD * 2;
+   int panelH = count * rowH + PANEL_PAD * 2;
    if(panelW < 300) panelW = 300;
 
    EnsureRect(PANEL_PREFIX + "BG", PANEL_X, PANEL_Y, panelW, panelH, CLR_BG, CLR_BORDER);
 
-   int x = PANEL_X + PANEL_PAD;
-   int y = PANEL_Y + PANEL_PAD;
+   int x0 = PANEL_X + PANEL_PAD;
+   int y0 = PANEL_Y + PANEL_PAD;
+   int idx = 0;
 
    for(int i = 0; i < count; i++)
    {
-      string name = PANEL_PREFIX + "L" + IntegerToString(i);
-      EnsureLabel(name, x, y + i * lineH, g_line[i], g_lineClr[i]);
+      int y = y0 + i * rowH;
+
+      if(g_lineSegFrom[i] < 0)
+      {
+         EnsureLabel(PANEL_PREFIX + "T" + IntegerToString(idx), x0, y, g_line[i], g_lineClr[i]);
+         idx++;
+         continue;
+      }
+
+      //  Several coloured pieces on one line: walk them left to right.
+      int cx = x0;
+      for(int s = 0; s < g_lineSegN[i]; s++)
+      {
+         int k = g_lineSegFrom[i] + s;
+         EnsureLabel(PANEL_PREFIX + "T" + IntegerToString(idx), cx, y, g_segText[k], g_segClr[k]);
+         idx++;
+         cx += TextWidth(g_segText[k]);
+      }
    }
 
-   //  Remove labels left over from a taller previous build.
-   for(int i = count; i < g_drawn; i++)
-      ObjectDelete(0, PANEL_PREFIX + "L" + IntegerToString(i));
+   //  Remove labels left over from a taller or more colourful build.
+   for(int i = idx; i < g_drawn; i++)
+      ObjectDelete(0, PANEL_PREFIX + "T" + IntegerToString(i));
 
-   g_drawn = count;
+   g_drawn = idx;
    ChartRedraw();
 }
 
