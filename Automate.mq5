@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|  Automate.mq5                                                    |
 //|                                                                  |
-//|  STAGE 1 - self-discovery and market status only.                |
+//|  STAGE 2 - self-discovery, market status and the signal engine.  |
 //|                                                                  |
 //|  What this build does:                                           |
 //|    * reads the attached chart symbol and everything the broker   |
@@ -14,24 +14,28 @@
 //|    * reports market state - open / closed / disconnected /       |
 //|      stale / trading unavailable / unknown - and the named       |
 //|      session (Tokyo / London / New York) when real UTC can be    |
-//|      established honestly.                                       |
+//|      established honestly;                                       |
+//|    * measures M5, M15 and M30 independently on closed bars and   |
+//|      reports TREND, the age of that trend, REGIME, a three-vote  |
+//|      SCORE and a SIGNAL.                                         |
 //|                                                                  |
 //|  What this build deliberately does NOT do yet:                   |
-//|    * no signals, no orders, no positions, no diary.              |
-//|      That is the next stage and is not in this file.             |
+//|    * no entries, stops, targets, lot size, orders, no diary.     |
+//|      The panel says SIGNAL ONLY so this can never be mistaken    |
+//|      for a trading build. That is stage 3 and later.             |
 //|                                                                  |
 //|  There are NO user inputs. Everything above is discovered or     |
 //|  measured; nothing needs to be typed in.                         |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.00"
-#property description "Automate stage 1: self-discovery, automatic configuration, market and session status."
+#property version   "1.10"
+#property description "Automate stage 2: self-discovery, automatic configuration, market and session status, trend / regime / score / signal per timeframe."
 #property description "No inputs. Sends no orders. Attach to any chart and timeframe."
 
 //==================================================================
 //  INTERNAL CONSTANTS  (deliberately not inputs)
 //==================================================================
-#define EA_STAGE            "stage 1 - discovery only"
+#define EA_STAGE            "stage 2 - signal engine"
 #define PANEL_PREFIX        "AUT_"
 #define PANEL_X             10
 #define PANEL_Y             20
@@ -49,6 +53,24 @@
 #define SPREAD_SAMPLE_SEC   5       // spread sampling interval
 #define STALE_MINUTES       5.0     // a quote older than this is stale
 #define DRAW_MIN_MS         250     // never repaint faster than this
+
+//  Stage 2.  Every threshold below was calibrated on synthetic series
+//  before it was written down; the calibrations are in autotrade.md.
+#define LANE_COUNT          3       // M5, M15, M30
+#define CHANGE_WINDOW       20      // bars for the typical-bar size
+#define TREND_PERIOD        30      // regression window for the trend vote
+#define STRUCTURE_PERIOD    20      // net-move window for the structure vote
+#define MOMENTUM_PERIOD     2       // two-bar close change
+#define REGIME_HOURS        128     // equalised drift span, in hours
+#define Z_STEADY            2.0     // regime boundary, standard deviations
+#define Z_MIXED             1.0     // regime boundary, standard deviations
+#define TREND_BAND_X        0.20    // trend deadband, in units of a typical bar
+#define MOVE_BAND_X         0.50    // move deadband = X * med * sqrt(horizon)
+#define MOVE_BAND_TICKS     1.00    // floor of the move deadband, in ticks
+#define AGE_HISTORY         200     // completed runs kept per state
+#define TREND_L1            150     // Ehlers bandpass long period, log only
+#define TREND_L2            24      // Ehlers bandpass short period, log only
+#define PI_D                3.14159265358979323846
 
 //  Colours - SimpleEA's palette, plus amber for HOLD reasons and red
 //  for alerts.  Text always carries the meaning; colour only
@@ -154,6 +176,31 @@ struct SessionRec
    int   durSec;    // length; may cross midnight
 };
 
+//  One timeframe's reading.  Recomputed only when a new bar of that
+//  timeframe has closed, so a ticking chart costs nothing.
+struct LaneState
+{
+   ENUM_TIMEFRAMES tf;
+   string   name;
+   bool     ready;
+   datetime lastBar;     // open time of the last bar processed
+   int      needBars;    // closed bars this lane requires
+   int      haveBars;    // closed bars the terminal actually has
+   int      trend;       // -1 DOWN / 0 FLAT / +1 UP
+   double   slopeRatio;  // slope in units of a typical bar
+   int      regime;      // 0 Steady / 1 Mixed / 2 Choppy
+   double   zValue;      // standardised net move over the equalised span
+   int      vMom;        // momentum vote
+   int      vStr;        // structure vote
+   int      score;       // trend + momentum + structure, -3 .. +3
+   int      signal;      // -1 SELL / 0 none / +1 BUY
+   int      trendAge;
+   int      trendMed;
+   int      regimeAge;
+   int      regimeMed;
+   int      ehSign;      // Ehlers bandpass sign, comparison log only
+};
+
 //==================================================================
 //  GLOBAL STATE
 //==================================================================
@@ -180,6 +227,21 @@ int    g_recentN    = 0;
 
 double g_spr[24][SPREAD_SAMPLES];  // running spread samples per hour
 int    g_sprN[24];
+
+//  Stage 2 state.  Two channels per lane - 0 trend, 1 regime - each
+//  keeping AGE_HISTORY completed run lengths.  Flattened into one
+//  array because MQL5 cannot pass a single row of a 2-D array by
+//  reference.
+LaneState g_lane[LANE_COUNT];
+
+int g_runHist[LANE_COUNT * 2 * AGE_HISTORY];
+int g_runCount[LANE_COUNT * 2];
+int g_runNow[LANE_COUNT * 2];
+int g_runPrev[LANE_COUNT * 2];
+#define RUN_UNSET  -99
+
+int g_ehAgree    = 0;   // Ehlers bandpass agreed with the trend vote
+int g_ehDisagree = 0;   // ... and did not
 
 datetime g_lastProfile  = 0;
 datetime g_lastSessions = 0;
@@ -1188,6 +1250,460 @@ void RefreshMarket()
 }
 
 //==================================================================
+//  STAGE 2 - THE SIGNAL ENGINE
+//==================================================================
+//  Three independent measurements per lane, a score, a signal, and
+//  the age of the current state against its own history.  Everything
+//  is computed on CLOSED bars only, and nothing here can send an
+//  order.
+//
+//  The trend vote is a regression slope divided by the size of an
+//  ordinary bar, so the same constant works on gold at 3500 and on
+//  EURUSD at 1.08.  The Ehlers bandpass is still computed, but only
+//  to be counted against the vote in the Experts log - measured, its
+//  sign is a coin flip against direction.  autotrade.md section 10.
+//==================================================================
+
+//------------------------------------------------------------------
+//  Bar geometry - how much history a lane needs
+//------------------------------------------------------------------
+int RegimeBarsFor(ENUM_TIMEFRAMES tf)
+{
+   int secs = PeriodSeconds(tf);
+   if(secs <= 0) secs = 300;
+   int mins = secs / 60;
+   if(mins <= 0) mins = 1;
+   int bars = (int)((REGIME_HOURS * 60) / mins);
+   if(bars < 20) bars = 20;
+   return(bars);
+}
+
+//------------------------------------------------------------------
+//  Closed bars, oldest first
+//------------------------------------------------------------------
+bool LoadLane(ENUM_TIMEFRAMES tf, int count,
+              double &close[], double &high[], double &low[])
+{
+   double sc[], sh[], sl[];
+   ArraySetAsSeries(sc, true);
+   ArraySetAsSeries(sh, true);
+   ArraySetAsSeries(sl, true);
+
+   //  start_pos 1 is the most recently CLOSED bar.  The forming bar is
+   //  never read, which is what makes the panel non-repainting (D8).
+   if(CopyClose(_Symbol, tf, 1, count, sc) < count) return(false);
+   if(CopyHigh (_Symbol, tf, 1, count, sh) < count) return(false);
+   if(CopyLow  (_Symbol, tf, 1, count, sl) < count) return(false);
+
+   ArrayResize(close, count);
+   ArrayResize(high,  count);
+   ArrayResize(low,   count);
+   ArraySetAsSeries(close, false);
+   ArraySetAsSeries(high,  false);
+   ArraySetAsSeries(low,   false);
+
+   //  In series view sc[0] is the newest, so the oldest closed bar sits
+   //  at sc[count-1] and belongs at index 0 of the chronological array.
+   for(int i = 0; i < count; i++)
+   {
+      close[i] = sc[count - 1 - i];
+      high[i]  = sh[count - 1 - i];
+      low[i]   = sl[count - 1 - i];
+   }
+   return(true);
+}
+
+//------------------------------------------------------------------
+//  Layer 1 - the size of an ordinary bar
+//------------------------------------------------------------------
+double MedianAbsChange(const double &close[], int n)
+{
+   if(n < CHANGE_WINDOW + 1) return(0.0);
+   double ch[];
+   ArrayResize(ch, CHANGE_WINDOW);
+   int base = n - CHANGE_WINDOW;
+   for(int i = 0; i < CHANGE_WINDOW; i++)
+   {
+      int k = base + i;
+      ch[i] = MathAbs(close[k] - close[k - 1]);
+   }
+   return(MedianOfArray(ch));
+}
+
+//------------------------------------------------------------------
+//  Layer 2 - the trend vote
+//------------------------------------------------------------------
+double RegressionSlope(const double &close[], int n, int k)
+{
+   if(k < 2 || n < k) return(0.0);
+   int base = n - k;
+   double mx = (k - 1) / 2.0;
+
+   double my = 0.0;
+   for(int i = 0; i < k; i++) my += close[base + i];
+   my /= (double)k;
+
+   double num = 0.0, den = 0.0;
+   for(int i = 0; i < k; i++)
+   {
+      double dx = (double)i - mx;
+      num += dx * (close[base + i] - my);
+      den += dx * dx;
+   }
+   return(den > 0.0 ? num / den : 0.0);
+}
+
+int TrendVoteFrom(double ratio)
+{
+   if(ratio >  TREND_BAND_X) return(1);
+   if(ratio < -TREND_BAND_X) return(-1);
+   return(0);
+}
+
+//------------------------------------------------------------------
+//  Layer 3 - the other two votes
+//------------------------------------------------------------------
+double HorizonBand(double med, double tick, int horizon)
+{
+   double band   = MOVE_BAND_X * med * MathSqrt((double)horizon);
+   double floorB = MOVE_BAND_TICKS * tick;
+   if(band < floorB) band = floorB;
+   return(band);
+}
+
+int MomentumVoteFrom(const double &close[], int n, double med, double tick)
+{
+   if(n <= MOMENTUM_PERIOD + 1) return(0);
+   double band = HorizonBand(med, tick, MOMENTUM_PERIOD);
+   double d    = close[n - 1] - close[n - 1 - MOMENTUM_PERIOD];
+   if(d >  band) return(1);
+   if(d < -band) return(-1);
+   return(0);
+}
+
+//  Net 20-bar move, then withdrawn when the confirmed swing structure
+//  contradicts it.  Pivots are 3-bar: one closed bar on each side.  A missing swing pair does NOT withdraw the vote -
+//  only a missing price history does.  This vote must stay genuinely
+//  independent of the trend vote, or 2/3 can never occur.
+int StructureVoteFrom(const double &close[], const double &high[],
+                      const double &low[], int n, double med, double tick)
+{
+   if(n <= STRUCTURE_PERIOD + 2) return(0);
+
+   double band = HorizonBand(med, tick, STRUCTURE_PERIOD);
+   double move = close[n - 1] - close[n - 1 - STRUCTURE_PERIOD];
+   if(MathAbs(move) <= band) return(0);
+
+   double lowLast = 0.0, lowPrev = 0.0, highLast = 0.0, highPrev = 0.0;
+   int    nLow = 0, nHigh = 0;
+
+   for(int j = n - 2; j >= 1; j--)
+   {
+      if(low[j] <= low[j - 1] && low[j] <= low[j + 1])
+      {
+         if(nLow == 0)      lowLast = low[j];
+         else if(nLow == 1) lowPrev = low[j];
+         nLow++;
+      }
+      if(high[j] >= high[j - 1] && high[j] >= high[j + 1])
+      {
+         if(nHigh == 0)      highLast = high[j];
+         else if(nHigh == 1) highPrev = high[j];
+         nHigh++;
+      }
+      if(nLow >= 2 && nHigh >= 2) break;
+   }
+
+   if(move > band)
+   {
+      if(nLow >= 2 && lowLast < lowPrev) return(0);
+      return(1);
+   }
+   if(nHigh >= 2 && highLast > highPrev) return(0);
+   return(-1);
+}
+
+//------------------------------------------------------------------
+//  Layer 4 - regime, on an equalised span
+//------------------------------------------------------------------
+//  z = net move / (sd of bar changes * sqrt(span)).  For a driftless
+//  series z is N(0,1) at ANY span, which is exactly what the lanes
+//  need: the same threshold means the same thing on M5 and on M30.
+double DriftZ(const double &close[], int n, int span)
+{
+   if(span < 20 || n < span + 1) return(0.0);
+   int base = n - span - 1;
+
+   double sum = 0.0;
+   for(int i = 1; i <= span; i++)
+      sum += close[base + i] - close[base + i - 1];
+   double mean = sum / (double)span;
+
+   double var = 0.0;
+   for(int i = 1; i <= span; i++)
+   {
+      double d = (close[base + i] - close[base + i - 1]) - mean;
+      var += d * d;
+   }
+   var /= (double)(span - 1);
+   if(var <= 0.0) return(0.0);
+
+   double net = close[n - 1] - close[base];
+   return(net / (MathSqrt(var) * MathSqrt((double)span)));
+}
+
+int RegimeCodeOf(double z)
+{
+   double az = MathAbs(z);
+   if(az >= Z_STEADY) return(0);
+   if(az >= Z_MIXED)  return(1);
+   return(2);
+}
+
+string RegimeText(int code)
+{
+   if(code == 0) return("Steady");
+   if(code == 1) return("Mixed");
+   return("Choppy");
+}
+
+//------------------------------------------------------------------
+//  Layer 5 - the age of the current state
+//------------------------------------------------------------------
+void PushRun(int ch, int run)
+{
+   if(run <= 0) return;
+   int base = ch * AGE_HISTORY;
+   if(g_runCount[ch] < AGE_HISTORY)
+   {
+      g_runHist[base + g_runCount[ch]] = run;
+      g_runCount[ch]++;
+      return;
+   }
+   for(int i = 1; i < AGE_HISTORY; i++)
+      g_runHist[base + i - 1] = g_runHist[base + i];
+   g_runHist[base + AGE_HISTORY - 1] = run;
+}
+
+void TrackState(int ch, int state)
+{
+   if(g_runPrev[ch] == state)
+   {
+      g_runNow[ch]++;
+      return;
+   }
+   if(g_runPrev[ch] != RUN_UNSET) PushRun(ch, g_runNow[ch]);
+   g_runPrev[ch] = state;
+   g_runNow[ch]  = 1;
+}
+
+int RunMedian(int ch)
+{
+   int cnt = g_runCount[ch];
+   if(cnt <= 0) return(0);
+   int base = ch * AGE_HISTORY;
+   int tmp[];
+   ArrayResize(tmp, cnt);
+   for(int i = 0; i < cnt; i++) tmp[i] = g_runHist[base + i];
+   ArraySort(tmp);
+   return(tmp[cnt / 2]);
+}
+
+//------------------------------------------------------------------
+//  Ehlers Precision Trend - comparison log ONLY, never a vote
+//------------------------------------------------------------------
+//  HighPass3 transcribed from Ehlers' own listing.  f is in radians,
+//  which is what MathCos expects.
+void EhHighPass3(const double &price[], int n, int period, double &hp[])
+{
+   ArrayResize(hp, n);
+   ArrayInitialize(hp, 0.0);
+   if(n < 3 || period < 2) return;
+
+   double f  = 1.414 * PI_D / (double)period;
+   double a1 = MathExp(-f);
+   double c2 = 2.0 * a1 * MathCos(f);
+   double c3 = -a1 * a1;
+   double c1 = (1.0 + c2 - c3) / 4.0;
+
+   for(int i = 2; i < n; i++)
+      hp[i] = c1 * (price[i] - 2.0 * price[i - 1] + price[i - 2])
+            + c2 * hp[i - 1]
+            + c3 * hp[i - 2];
+}
+
+int EhTrendSign(const double &close[], int n)
+{
+   if(n < TREND_L1 + 2) return(0);
+
+   double hp1[], hp2[];
+   EhHighPass3(close, n, TREND_L1, hp1);
+   EhHighPass3(close, n, TREND_L2, hp2);
+
+   int k = (n < 200 ? n : 200);
+   double absv[];
+   ArrayResize(absv, k);
+   for(int i = 0; i < k; i++)
+      absv[i] = MathAbs(hp1[n - k + i] - hp2[n - k + i]);
+
+   double band = 0.25 * MedianOfArray(absv);
+   double now  = hp1[n - 1] - hp2[n - 1];
+   if(now >  band) return(1);
+   if(now < -band) return(-1);
+   return(0);
+}
+
+//------------------------------------------------------------------
+//  One lane, one closed bar
+//------------------------------------------------------------------
+bool UpdateLane(int idx)
+{
+   ENUM_TIMEFRAMES tf = g_lane[idx].tf;
+
+   int span = RegimeBarsFor(tf);
+   int need = span + 1;                      // z needs span+1 closes
+   if(need < TREND_L1 * 3) need = TREND_L1 * 3;
+   if(need < g_p.warmupBars) need = g_p.warmupBars;
+
+   g_lane[idx].needBars = need;
+
+   int have = Bars(_Symbol, tf);
+   g_lane[idx].haveBars = have;
+   if(have < need + 2) return(false);
+
+   double close[], high[], low[];
+   if(!LoadLane(tf, need, close, high, low)) return(false);
+
+   double tick = g_f.tickSize;
+   if(tick <= 0.0) tick = g_f.point;
+   if(tick <= 0.0) tick = 0.00001;
+
+   double med = MedianAbsChange(close, need);
+   if(med <= 0.0) med = tick;
+
+   double ratio = RegressionSlope(close, need, TREND_PERIOD) / med;
+   g_lane[idx].slopeRatio = ratio;
+   g_lane[idx].trend      = TrendVoteFrom(ratio);
+
+   g_lane[idx].vMom = MomentumVoteFrom(close, need, med, tick);
+   g_lane[idx].vStr = StructureVoteFrom(close, high, low, need, med, tick);
+
+   g_lane[idx].score  = g_lane[idx].trend + g_lane[idx].vMom + g_lane[idx].vStr;
+
+   int sig = 0;
+   if(g_lane[idx].score >=  2) sig =  1;
+   if(g_lane[idx].score <= -2) sig = -1;
+   g_lane[idx].signal = sig;
+
+   g_lane[idx].zValue = DriftZ(close, need, span);
+   g_lane[idx].regime = RegimeCodeOf(g_lane[idx].zValue);
+
+   g_lane[idx].ehSign = EhTrendSign(close, need);
+   if(g_lane[idx].ehSign == g_lane[idx].trend) g_ehAgree++;
+   else                                        g_ehDisagree++;
+
+   TrackState(idx * 2,     g_lane[idx].trend);
+   TrackState(idx * 2 + 1, g_lane[idx].regime);
+
+   g_lane[idx].trendAge  = g_runNow[idx * 2];
+   g_lane[idx].trendMed  = RunMedian(idx * 2);
+   g_lane[idx].regimeAge = g_runNow[idx * 2 + 1];
+   g_lane[idx].regimeMed = RunMedian(idx * 2 + 1);
+
+   g_lane[idx].ready = true;
+   return(true);
+}
+
+void UpdateLanes()
+{
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      datetime t = iTime(_Symbol, g_lane[i].tf, 1);
+      if(t == 0) continue;
+      if(t == g_lane[i].lastBar) continue;
+      //  lastBar only advances on success, so a chart still loading
+      //  history retries every heartbeat instead of waiting a bar.
+      if(UpdateLane(i)) g_lane[i].lastBar = t;
+   }
+}
+
+//------------------------------------------------------------------
+//  Text
+//------------------------------------------------------------------
+string TrendText(int v)
+{
+   if(v > 0) return("UP");
+   if(v < 0) return("DOWN");
+   return("FLAT");
+}
+
+color TrendColour(int v)
+{
+   if(v > 0) return(CLR_OK);
+   if(v < 0) return(CLR_ALERT);
+   return(CLR_DIM);
+}
+
+color SignalColour(int s)
+{
+   if(s > 0) return(CLR_OK);
+   if(s < 0) return(CLR_ALERT);
+   return(CLR_DIM);
+}
+
+string ScoreText(int score)
+{
+   int a = (score < 0 ? -score : score);
+   return(IntegerToString(a) + "/3");
+}
+
+string SignalText(int s)
+{
+   if(s > 0) return("BUY");
+   if(s < 0) return("SELL");
+   return("NO SIGNAL");
+}
+
+string AgeText(int age, int med)
+{
+   if(med <= 0) return(IntegerToString(age) + "/-");
+   return(IntegerToString(age) + "/" + IntegerToString(med));
+}
+
+//------------------------------------------------------------------
+//  Hourly line to the Experts log, so the panel can be checked
+//------------------------------------------------------------------
+void LogLanes()
+{
+   static datetime lastPrint = 0;
+   datetime now = ServerNow();
+   if(lastPrint != 0 && now - lastPrint < 3600) return;
+   lastPrint = now;
+
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      if(!g_lane[i].ready)
+      {
+         PrintFormat("%s DATA WAIT - %d of %d closed bars",
+                     g_lane[i].name, g_lane[i].haveBars, g_lane[i].needBars);
+         continue;
+      }
+      PrintFormat("%s trend %s %d/%d, regime %s %d/%d, z=%.2f, slope ratio %.3f, votes %d %d %d, score %d, %s",
+                  g_lane[i].name,
+                  TrendText(g_lane[i].trend), g_lane[i].trendAge, g_lane[i].trendMed,
+                  RegimeText(g_lane[i].regime), g_lane[i].regimeAge, g_lane[i].regimeMed,
+                  g_lane[i].zValue, g_lane[i].slopeRatio,
+                  g_lane[i].trend, g_lane[i].vMom, g_lane[i].vStr,
+                  g_lane[i].score, SignalText(g_lane[i].signal));
+   }
+
+   int tot = g_ehAgree + g_ehDisagree;
+   if(tot > 0)
+      PrintFormat("Ehlers vs slope: %d agree, %d disagree (%.1f%% agree) over %d closed bars",
+                  g_ehAgree, g_ehDisagree, 100.0 * (double)g_ehAgree / (double)tot, tot);
+}
+
+//==================================================================
 //  PANEL
 //==================================================================
 //  The layout follows the interface sketch in automate.md section 7.
@@ -1259,6 +1775,48 @@ void AddSegLine(string &texts[], color &clrs[])
 }
 
 
+//  One lane, one row, coloured by direction.  Every segment is padded
+//  to its column width so the concatenation lands on the same columns
+//  as the plain header:
+//      TF 1 | TREND 8 | AGE 15 | REGIME 22 | SCORE 31 | SIGNAL 38
+//      | TRADE STATUS 48
+void LaneRow(int idx)
+{
+   string tfTxt     = g_lane[idx].name;
+   string trendTxt  = "-";
+   string ageTxt    = "-";
+   string regimeTxt = "-";
+   string scoreTxt  = "-";
+   string signalTxt = "-";
+   string statusTxt = "DATA WAIT";
+
+   color trendClr  = CLR_DIM;
+   color signalClr = CLR_DIM;
+
+   if(g_lane[idx].ready)
+   {
+      trendTxt  = TrendText(g_lane[idx].trend);
+      ageTxt    = AgeText(g_lane[idx].trendAge, g_lane[idx].trendMed);
+      regimeTxt = RegimeText(g_lane[idx].regime);
+      scoreTxt  = ScoreText(g_lane[idx].score);
+      signalTxt = SignalText(g_lane[idx].signal);
+      statusTxt = "SIGNAL ONLY";
+      trendClr  = TrendColour(g_lane[idx].trend);
+      signalClr = SignalColour(g_lane[idx].signal);
+   }
+
+   string segT[7];
+   color  segC[7];
+   segT[0] = " " + Pad(tfTxt, 7);   segC[0] = CLR_TEXT;
+   segT[1] = Pad(trendTxt, 7);      segC[1] = trendClr;
+   segT[2] = Pad(ageTxt, 7);        segC[2] = CLR_DIM;
+   segT[3] = Pad(regimeTxt, 9);     segC[3] = CLR_TEXT;
+   segT[4] = Pad(scoreTxt, 7);      segC[4] = CLR_VALUE;
+   segT[5] = Pad(signalTxt, 10);    segC[5] = signalClr;
+   segT[6] = statusTxt;             segC[6] = CLR_DIM;
+   AddSegLine(segT, segC);
+}
+
 //  Two columns at the exact positions used by the automate.md sketch:
 //  left text at column 1, right text at column COL_RIGHT.
 string TwoCol(string left, string right)
@@ -1266,13 +1824,15 @@ string TwoCol(string left, string right)
    return(" " + Pad(left, COL_RIGHT - 1) + right);
 }
 
-//  The timeframe table: TF, TREND, REGIME, SCORE, SIGNAL, TRADE STATUS
-//  at columns 1, 8, 15, 24, 31 and 39.
-string TableRow(string tf, string trend, string regime,
+//  The timeframe table header: TF, TREND, AGE, REGIME, SCORE, SIGNAL,
+//  TRADE STATUS at columns 1, 8, 15, 22, 31, 38 and 48.  SIGNAL is 10
+//  wide because NO SIGNAL is 9 characters and needs one separating
+//  space before TRADE STATUS.
+string TableRow(string tf, string trend, string age, string regime,
                 string score, string signal, string status)
 {
-   return(" " + Pad(tf, 7) + Pad(trend, 7) + Pad(regime, 9) +
-          Pad(score, 7) + Pad(signal, 8) + status);
+   return(" " + Pad(tf, 7) + Pad(trend, 7) + Pad(age, 7) + Pad(regime, 9) +
+          Pad(score, 7) + Pad(signal, 10) + status);
 }
 
 int LaneBars(ENUM_TIMEFRAMES tf)
@@ -1334,13 +1894,13 @@ void BuildPanel()
    AddLine("", CLR_TEXT);
 
    // ---------------------------------------------------------------
-   //  Timeframe table.  Values arrive with the signal stage; the rows
-   //  are drawn now so the panel keeps its final shape.
+   //  Timeframe table - one row per lane, filled by the signal
+   //  engine.  A lane whose history is too shallow says DATA WAIT
+   //  rather than reading a regime from half a window.
    // ---------------------------------------------------------------
-   AddLine(TableRow("TF", "TREND", "REGIME", "SCORE", "SIGNAL", "TRADE STATUS"), CLR_SECTION);
-   AddLine(TableRow("M5",  "", "", "", "", ""), CLR_DIM);
-   AddLine(TableRow("M15", "", "", "", "", ""), CLR_DIM);
-   AddLine(TableRow("M30", "", "", "", "", ""), CLR_DIM);
+   AddLine(TableRow("TF", "TREND", "AGE", "REGIME", "SCORE", "SIGNAL",
+                    "TRADE STATUS"), CLR_SECTION);
+   for(int i = 0; i < LANE_COUNT; i++) LaneRow(i);
    AddLine("", CLR_TEXT);
 
    // ---------------------------------------------------------------
@@ -1657,6 +2217,9 @@ void Heartbeat()
    RefreshMarket();
    ApplyHourAdjustment();
 
+   UpdateLanes();
+   LogLanes();
+
    ulong ms = GetTickCount();
    if(lastDraw != 0 && (ms - lastDraw) < DRAW_MIN_MS) return;
    lastDraw = ms;
@@ -1685,6 +2248,41 @@ int OnInit()
       g_hourDays[h] = 0;
    }
 
+   //  Lanes and their run-length histories start empty, so the first
+   //  bar of each timeframe is a clean first observation.
+   g_ehAgree    = 0;
+   g_ehDisagree = 0;
+   ArrayInitialize(g_runHist, 0);
+   for(int c = 0; c < LANE_COUNT * 2; c++)
+   {
+      g_runCount[c] = 0;
+      g_runNow[c]   = 0;
+      g_runPrev[c]  = RUN_UNSET;
+   }
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      g_lane[i].ready      = false;
+      g_lane[i].lastBar    = 0;
+      g_lane[i].needBars   = 0;
+      g_lane[i].haveBars   = 0;
+      g_lane[i].trend      = 0;
+      g_lane[i].regime     = 2;
+      g_lane[i].score      = 0;
+      g_lane[i].signal     = 0;
+      g_lane[i].trendAge   = 0;
+      g_lane[i].trendMed   = 0;
+      g_lane[i].regimeAge  = 0;
+      g_lane[i].regimeMed  = 0;
+      g_lane[i].slopeRatio = 0.0;
+      g_lane[i].zValue     = 0.0;
+      g_lane[i].vMom       = 0;
+      g_lane[i].vStr       = 0;
+      g_lane[i].ehSign     = 0;
+   }
+   g_lane[0].tf = PERIOD_M5;   g_lane[0].name = "M5";
+   g_lane[1].tf = PERIOD_M15;  g_lane[1].name = "M15";
+   g_lane[2].tf = PERIOD_M30;  g_lane[2].name = "M30";
+
    DiscoverSymbol(g_f);
    ClassifySymbol(g_f, g_base);
    CopyProfile(g_base, g_p);
@@ -1693,6 +2291,9 @@ int OnInit()
    BuildHourProfile();
    RefreshMarket();
    ApplyHourAdjustment();
+
+   UpdateLanes();
+   LogLanes();
 
    BuildPanel();
    DrawPanel();
