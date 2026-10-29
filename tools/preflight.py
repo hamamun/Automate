@@ -67,6 +67,11 @@ bad = [(v, f.group(1)) for v, t in vs.items() if t in structs
 chk("struct fields valid", not bad, str(sorted(set(bad))))
 
 chk("no input declarations", not re.search(r'^\s*input\s', s, re.M))
+
+# dead code: a function defined but never called
+dead = [f for f in set(fnames) if f not in ('OnInit','OnDeinit','OnTick','OnTimer')
+        and len(re.findall(r'\b' + re.escape(f) + r'\s*\(', s)) <= 1]
+chk("no unused functions", not dead, str(sorted(dead)))
 chk("ascii only", all(ord(c) < 128 for c in src))
 
 print(f"\nlines: {src.count(chr(10))+1} | functions: {len(fnames)} | file-scope vars: {len(decls)}")
