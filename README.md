@@ -138,6 +138,12 @@ A full dump is also printed to the **Experts** tab when the EA attaches.
 - The session table is the broker's. Holidays and one-off closures are not in it, so a
   holiday can still read `MARKET OPEN` until the quote goes stale.
 - Named sessions are labels only. They never decide whether trading is allowed.
+- The clock used for session reasoning is the broker's own last tick time while a feed is
+  live, and the running server clock once the feed has stopped for more than five minutes —
+  otherwise a closed market would freeze the "next open in …" countdown.
+- The server's UTC offset is snapped to the nearest 15 minutes and rejected only if it is
+  more than two minutes off that grid, because the two clocks are never sampled at exactly
+  the same instant.
 - Classification is a scoring heuristic over broker metadata. Unusual names fall back to
   `Other/Unknown` with the general profile, by design.
 - The hour profile is held in memory only; it needs about five distinct days of that hour

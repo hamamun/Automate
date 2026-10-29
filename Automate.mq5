@@ -53,19 +53,17 @@
 //  Colours - SimpleEA's palette, plus amber for HOLD reasons and red
 //  for alerts.  Text always carries the meaning; colour only
 //  reinforces it.
-#define CLR_BG        C'48,48,48'
-#define CLR_BORDER    C'96,96,96'
-#define CLR_TITLE     clrWhite
-#define CLR_TEXT      clrSilver
-#define CLR_LABEL     C'150,150,150'
-#define CLR_VALUE     clrWhite
-#define CLR_SECTION   C'120,180,220'
-#define CLR_OK        clrLime
-#define CLR_UP        clrLime
-#define CLR_DOWN      clrTomato
-#define CLR_HOLD      clrOrange
-#define CLR_ALERT     clrRed
-#define CLR_DIM       C'150,150,150'
+const color CLR_BG      = C'48,48,48';
+const color CLR_BORDER  = C'96,96,96';
+const color CLR_TITLE   = clrWhite;
+const color CLR_TEXT    = clrSilver;
+const color CLR_LABEL   = C'150,150,150';
+const color CLR_VALUE   = clrWhite;
+const color CLR_SECTION = C'120,180,220';
+const color CLR_OK      = clrLime;
+const color CLR_HOLD    = clrOrange;
+const color CLR_ALERT   = clrRed;
+const color CLR_DIM     = C'150,150,150';
 
 //  Array indices for the classifier.  Plain integers on purpose: the
 //  scoring code stays readable and free of enum/int conversions.
@@ -313,6 +311,46 @@ string WeekdayShort(datetime t)
 }
 
 //==================================================================
+//  STRUCT COPY
+//==================================================================
+//  AssetProfile contains strings, so it is a complex structure.
+//  Copy it field by field rather than relying on structure
+//  assignment, which is not portable across MQL5 builds.
+void CopyProfile(const AssetProfile &src, AssetProfile &dst)
+{
+   dst.clsIndex     = src.clsIndex;
+   dst.label        = src.label;
+   dst.basis        = src.basis;
+   dst.unconfirmed  = src.unconfirmed;
+   dst.warmupBars   = src.warmupBars;
+   dst.bufferTicks  = src.bufferTicks;
+   dst.spreadGateX  = src.spreadGateX;
+   dst.sessionAware = src.sessionAware;
+   dst.note         = src.note;
+}
+
+//==================================================================
+//  CLOCK
+//==================================================================
+datetime ServerNow()
+{
+   datetime tc = TimeCurrent();       // broker's own last tick time
+   datetime ts = TimeTradeServer();   // keeps running offline
+
+   if(tc <= 0) return(ts);
+   if(ts <= 0) return(tc);
+
+   long drift = (long)ts - (long)tc;
+   if(drift < 0) drift = -drift;
+
+   //  Within five minutes they describe the same moment, so the
+   //  broker's tick time is preferred.  Beyond that the tick feed has
+   //  stopped and only the running clock can still be used.
+   if(drift <= 300) return(tc);
+   return(ts);
+}
+
+//==================================================================
 //  DISCOVERY - read what the terminal already knows
 //==================================================================
 void DiscoverSymbol(SymbolFacts &f)
@@ -478,16 +516,16 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    }
 
    // ---- name and path are the strongest broker-specific hints ----
-   if(HasToken(nm, CRYPTO_TOK))   { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "name;"; }
-   if(HasToken(nm, METAL_TOK))    { sc[A_METAL]  += 4; ev[A_METAL]  += "name;"; }
-   if(HasToken(nm, ENERGY_TOK))   { sc[A_ENERGY] += 4; ev[A_ENERGY] += "name;"; }
-   if(HasToken(nm, INDEX_TOK))    { sc[A_INDEX]  += 4; ev[A_INDEX]  += "name;"; }
-   if(HasToken(pth, CRYPTO_PATH)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "path;"; }
-   if(HasToken(pth, METAL_PATH))  { sc[A_METAL]  += 4; ev[A_METAL]  += "path;"; }
-   if(HasToken(pth, ENERGY_PATH)) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "path;"; }
-   if(HasToken(pth, INDEX_PATH))  { sc[A_INDEX]  += 4; ev[A_INDEX]  += "path;"; }
-   if(HasToken(pth, STOCK_PATH))  { sc[A_STOCK]  += 3; ev[A_STOCK]  += "path;"; }
-   if(HasToken(pth, FOREX_PATH))  { sc[A_FOREX]  += 3; ev[A_FOREX]  += "path;"; }
+   if(HasToken(nm, CRYPTO_TOK))   { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "name, "; }
+   if(HasToken(nm, METAL_TOK))    { sc[A_METAL]  += 4; ev[A_METAL]  += "name, "; }
+   if(HasToken(nm, ENERGY_TOK))   { sc[A_ENERGY] += 4; ev[A_ENERGY] += "name, "; }
+   if(HasToken(nm, INDEX_TOK))    { sc[A_INDEX]  += 4; ev[A_INDEX]  += "name, "; }
+   if(HasToken(pth, CRYPTO_PATH)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "path, "; }
+   if(HasToken(pth, METAL_PATH))  { sc[A_METAL]  += 4; ev[A_METAL]  += "path, "; }
+   if(HasToken(pth, ENERGY_PATH)) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "path, "; }
+   if(HasToken(pth, INDEX_PATH))  { sc[A_INDEX]  += 4; ev[A_INDEX]  += "path, "; }
+   if(HasToken(pth, STOCK_PATH))  { sc[A_STOCK]  += 3; ev[A_STOCK]  += "path, "; }
+   if(HasToken(pth, FOREX_PATH))  { sc[A_FOREX]  += 3; ev[A_FOREX]  += "path, "; }
 
    // ---- the name itself: EURUSD, GBPJPY, USDJPYm ... ----
    //  Two ISO codes glued together is strong evidence even when the
@@ -504,7 +542,7 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    if(nameFx)
    {
       sc[A_FOREX] += 4;
-      ev[A_FOREX] += "name;";
+      ev[A_FOREX] += "name, ";
    }
 
    // ---- currency codes: two ISO codes means an FX pair ----
@@ -515,8 +553,8 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
       sc[A_FOREX] += 2;
       ev[A_FOREX] += "currencies;";
    }
-   if(EqualsAny(bas, METAL_CODE))  { sc[A_METAL]  += 4; ev[A_METAL]  += "base ccy;"; }
-   if(EqualsAny(bas, CRYPTO_CODE)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "base ccy;"; }
+   if(EqualsAny(bas, METAL_CODE))  { sc[A_METAL]  += 4; ev[A_METAL]  += "base ccy, "; }
+   if(EqualsAny(bas, CRYPTO_CODE)) { sc[A_CRYPTO] += 4; ev[A_CRYPTO] += "base ccy, "; }
 
    // ---- calculation mode ----
    if(f.calcMode == (int)SYMBOL_CALC_MODE_FOREX ||
@@ -529,12 +567,12 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    if(f.calcMode == (int)SYMBOL_CALC_MODE_CFDINDEX)
    {
       sc[A_INDEX] += 3;
-      ev[A_INDEX] += "calc mode;";
+      ev[A_INDEX] += "calc mode, ";
    }
    if(f.calcMode == (int)SYMBOL_CALC_MODE_EXCH_STOCKS)
    {
       sc[A_STOCK] += 3;
-      ev[A_STOCK] += "calc mode;";
+      ev[A_STOCK] += "calc mode, ";
    }
    if(f.calcMode == (int)SYMBOL_CALC_MODE_FUTURES)
    {
@@ -542,13 +580,13 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    }
 
    // ---- description and exchange metadata ----
-   if(HasToken(dsc, "GOLD|SILVER|PLATINUM|PALLADIUM"))  { sc[A_METAL]  += 3; ev[A_METAL]  += "description;"; }
-   if(HasToken(dsc, "BITCOIN|ETHEREUM|CRYPTO|DOGECOIN")){ sc[A_CRYPTO] += 3; ev[A_CRYPTO] += "description;"; }
-   if(HasToken(dsc, "CRUDE|BRENT|NATURAL GAS|WTI|OIL")) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "description;"; }
-   if(HasToken(dsc, "INDEX|INDICES"))                   { sc[A_INDEX]  += 2; ev[A_INDEX]  += "description;"; }
-   if(HasToken(dsc, " VS "))                            { sc[A_FOREX]  += 1; ev[A_FOREX]  += "description;"; }
-   if(HasToken(sec, SECTOR_STOCK))                      { sc[A_STOCK]  += 2; ev[A_STOCK]  += "sector;"; }
-   if(HasToken(ind, INDUSTRY_STOCK))                    { sc[A_STOCK]  += 2; ev[A_STOCK]  += "industry;"; }
+   if(HasToken(dsc, "GOLD|SILVER|PLATINUM|PALLADIUM"))  { sc[A_METAL]  += 3; ev[A_METAL]  += "description, "; }
+   if(HasToken(dsc, "BITCOIN|ETHEREUM|CRYPTO|DOGECOIN")){ sc[A_CRYPTO] += 3; ev[A_CRYPTO] += "description, "; }
+   if(HasToken(dsc, "CRUDE|BRENT|NATURAL GAS|WTI|OIL")) { sc[A_ENERGY] += 3; ev[A_ENERGY] += "description, "; }
+   if(HasToken(dsc, "INDEX|INDICES"))                   { sc[A_INDEX]  += 2; ev[A_INDEX]  += "description, "; }
+   if(HasToken(dsc, " VS "))                            { sc[A_FOREX]  += 1; ev[A_FOREX]  += "description, "; }
+   if(HasToken(sec, SECTOR_STOCK))                      { sc[A_STOCK]  += 2; ev[A_STOCK]  += "sector, "; }
+   if(HasToken(ind, INDUSTRY_STOCK))                    { sc[A_STOCK]  += 2; ev[A_STOCK]  += "industry, "; }
 
    // ---- pick the winner, but only when it clearly leads ----
    int best = A_OTHER, bestScore = 0, second = 0;
@@ -584,8 +622,8 @@ void ClassifySymbol(const SymbolFacts &f, AssetProfile &p)
    p.unconfirmed = false;
 
    string basis = ev[best];
-   if(StringLen(basis) > 0 && StringSubstr(basis, StringLen(basis) - 1, 1) == ";")
-      basis = StringSubstr(basis, 0, StringLen(basis) - 1);
+   if(StringLen(basis) >= 2 && StringSubstr(basis, StringLen(basis) - 2, 2) == ", ")
+      basis = StringSubstr(basis, 0, StringLen(basis) - 2);
    p.basis = basis;
 
    string why = "";
@@ -689,7 +727,7 @@ void SampleSpread()
 {
    if(g_f.point <= 0.0 || g_f.spreadPts <= 0) return;
 
-   datetime now = TimeCurrent();
+   datetime now = ServerNow();
    if(g_lastSample > 0 && (now - g_lastSample) < SPREAD_SAMPLE_SEC) return;
    g_lastSample = now;
 
@@ -967,10 +1005,17 @@ bool ResolveUtc(datetime serverNow, datetime &utcNow, string &srcNote)
       return(false);
    }
 
-   long off = (long)serverNow - (long)g;
+   long raw = (long)serverNow - (long)g;
 
    //  A real broker offset sits on a 15-minute grid inside +/-14h.
-   if((off % 900) != 0 || off < -14 * 3600 || off > 14 * 3600)
+   //  The two clocks are not sampled at the same instant, so snap to
+   //  the grid and reject the reading only when it is more than two
+   //  minutes away from it - a genuine non-grid offset, not lag.
+   long off  = (long)MathRound((double)raw / 900.0) * 900;
+   long slack = raw - off;
+   if(slack < 0) slack = -slack;
+
+   if(slack > 120 || off < -14 * 3600 || off > 14 * 3600)
    {
       srcNote = "server offset not verifiable";
       return(false);
@@ -1044,7 +1089,7 @@ string TradeModeNote(int mode)
 
 void RefreshMarket()
 {
-   datetime serverNow = TimeCurrent();
+   datetime serverNow = ServerNow();
 
    bool connected = (TerminalInfoInteger(TERMINAL_CONNECTED) != 0);
    bool stale = true;
@@ -1171,7 +1216,7 @@ void BuildPanel()
 {
    ResetLines();
 
-   datetime serverNow = TimeCurrent();
+   datetime serverNow = ServerNow();
    MqlDateTime st;
    TimeToStruct(serverNow, st);
 
@@ -1452,10 +1497,10 @@ void DumpDiscovery()
 //==================================================================
 void ApplyHourAdjustment()
 {
-   g_p = g_base;                       // start from what classification decided
+   CopyProfile(g_base, g_p);           // start from what classification decided
    g_p.note = "";
 
-   datetime now = TimeCurrent();
+   datetime now = ServerNow();
    MqlDateTime st;
    TimeToStruct(now, st);
    int hour = st.hour;
@@ -1498,7 +1543,7 @@ void Heartbeat()
 {
    static ulong lastDraw = 0;
 
-   datetime now = TimeCurrent();
+   datetime now = ServerNow();
 
    if(g_lastSessions == 0 || now - g_lastSessions >= SESSION_REFRESH_SEC)
    {
@@ -1547,7 +1592,7 @@ int OnInit()
 
    DiscoverSymbol(g_f);
    ClassifySymbol(g_f, g_base);
-   g_p = g_base;
+   CopyProfile(g_base, g_p);
 
    ReadSessions();
    BuildHourProfile();
