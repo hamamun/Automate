@@ -1045,9 +1045,9 @@ bool ResolveUtc(datetime serverNow, datetime &utcNow, string &srcNote)
    long oh = absOff / 3600;
    long om = (absOff % 3600) / 60;
 
-   if(off == 0)     srcNote = "server UTC+0 (est.)";
-   else if(off < 0) srcNote = StringFormat("server UTC-%d:%02d (est.)", (int)oh, (int)om);
-   else             srcNote = StringFormat("server UTC+%d:%02d (est.)", (int)oh, (int)om);
+   if(off == 0)     srcNote = "server clock is UTC";
+   else if(off < 0) srcNote = StringFormat("server clock is UTC-%d:%02d", (int)oh, (int)om);
+   else             srcNote = StringFormat("server clock is UTC+%d:%02d", (int)oh, (int)om);
 
    return(true);
 }
@@ -1075,18 +1075,6 @@ string SessionLabel(datetime utcNow)
 
    if(s == "") s = "between sessions";
    return(s);
-}
-
-string SessionClockLine(datetime utcNow)
-{
-   int lonOff = EuSummerTime(utcNow) ? 3600 : 0;
-   int nyOff  = UsSummerTime(utcNow) ? -4 * 3600 : -5 * 3600;
-
-   long tokyoSec = ((long)utcNow + 9 * 3600) % 86400;
-   long lonSec   = ((long)utcNow + lonOff) % 86400;
-   long nySec    = ((long)utcNow + nyOff) % 86400;
-
-   return("Tokyo " + Hhmm(tokyoSec) + "  London " + Hhmm(lonSec) + "  NY " + Hhmm(nySec));
 }
 
 //==================================================================
@@ -1270,10 +1258,6 @@ void AddSegLine(string &texts[], color &clrs[])
    }
 }
 
-void SectionTitle(string text)
-{
-   AddLine(" " + text, CLR_SECTION);
-}
 
 //  Two columns at the exact positions used by the automate.md sketch:
 //  left text at column 1, right text at column COL_RIGHT.
@@ -1301,30 +1285,32 @@ void BuildPanel()
    ResetLines();
 
    datetime serverNow = ServerNow();
-   MqlDateTime st;
-   TimeToStruct(serverNow, st);
-
-   int hour = st.hour;
-   if(hour < 0 || hour > 23) hour = 0;
 
    datetime utcNow = 0;
    string   srcNote = "";
    bool utcKnown = ResolveUtc(serverNow, utcNow, srcNote);
 
    // ---------------------------------------------------------------
-   //  Row 1 - identity
-   //  symbol | class | account mode | auto trading (not built yet)
+   //  Row 1 - identity:  AUTOMATE  symbol | class | account
+   //  Automate's own ON/OFF flag joins this row with the trading
+   //  stage; until then the row ends at the account mode rather than
+   //  leaving a separator with nothing after it.
    // ---------------------------------------------------------------
    AddLine(" AUTOMATE    " + g_f.name + "  |  " + g_p.label +
-           "  |  " + AccountModeText() + "  |  ", CLR_TITLE);
+           "  |  " + AccountModeText(), CLR_TITLE);
 
    // ---------------------------------------------------------------
    //  Row 2 - market state | session | spread
    //  Only the state carries colour; the rest of the line stays
-   //  silver so a red "MARKET CLOSED" does not shout the whole row.
+   //  silver so a red MARKET CLOSED does not shout the whole row.
    // ---------------------------------------------------------------
    double sprPts = (g_f.point > 0.0) ? g_f.spreadPrice / g_f.point : 0.0;
-   string sessTxt = utcKnown ? (SessionLabel(utcNow) + " (est.)") : "unknown";
+
+   //  The session name comes from the broker's own server clock read
+   //  against real UTC; it is a statement, not an estimate.  Only the
+   //  Strategy Tester, where UTC cannot be reconstructed at all, has
+   //  to say "unknown".
+   string sessTxt = utcKnown ? SessionLabel(utcNow) : "unknown";
 
    string segTxt[3];
    color  segClr[3];
@@ -1336,9 +1322,9 @@ void BuildPanel()
    segClr[2] = CLR_TEXT;
    AddSegLine(segTxt, segClr);
 
-   //  The "until ..." / "next open ..." detail only earns its own row
-   //  when the market is not simply open; on a live symbol row 2 has
-   //  already said everything.
+   //  Only when the market is not simply open: the close reason, the
+   //  next open time and the broker's own restriction.  On a live
+   //  symbol row 2 has already said everything.
    if(g_m.code != MS_OPEN)
       AddLine(" " + g_m.detail, (g_m.code == MS_CLOSED ? CLR_HOLD : CLR_DIM));
 
@@ -1348,7 +1334,8 @@ void BuildPanel()
    AddLine("", CLR_TEXT);
 
    // ---------------------------------------------------------------
-   //  Timeframe table - values arrive with the signal stage
+   //  Timeframe table.  Values arrive with the signal stage; the rows
+   //  are drawn now so the panel keeps its final shape.
    // ---------------------------------------------------------------
    AddLine(TableRow("TF", "TREND", "REGIME", "SCORE", "SIGNAL", "TRADE STATUS"), CLR_SECTION);
    AddLine(TableRow("M5",  "", "", "", "", ""), CLR_DIM);
@@ -1357,7 +1344,7 @@ void BuildPanel()
    AddLine("", CLR_TEXT);
 
    // ---------------------------------------------------------------
-   //  Selected lane - blanks until the plan stage exists
+   //  Selected lane.  Blank until the plan stage exists.
    // ---------------------------------------------------------------
    AddLine(TwoCol("Selected:", "Entry:"), CLR_DIM);
    AddLine(TwoCol("SL:", "TP:"), CLR_DIM);
@@ -1365,100 +1352,6 @@ void BuildPanel()
    AddLine(TwoCol("Size:", "Planned risk:"), CLR_DIM);
    AddLine(TwoCol("Combined exposure:", ""), CLR_DIM);
    AddLine(TwoCol("Diary:", "Unknown future costs:"), CLR_DIM);
-   AddLine("", CLR_TEXT);
-
-   // ---------------------------------------------------------------
-   //  What this stage discovered
-   // ---------------------------------------------------------------
-   SectionTitle("DISCOVERY");
-
-   AddLine(L("Description", g_f.desc == "" ? "-" : g_f.desc), CLR_TEXT);
-   AddLine(L("Path", g_f.path == "" ? "-" : g_f.path), CLR_TEXT);
-   AddLine(L("Calc mode", CalcModeText(g_f.calcMode) +
-                          "   |   sector: " + (g_f.sector == "" ? "-" : g_f.sector)), CLR_TEXT);
-
-   AddLine(L("Currencies", (g_f.baseCur == "" ? "-" : g_f.baseCur) + " / " +
-                           (g_f.profitCur == "" ? "-" : g_f.profitCur) +
-                           "   account " + AccountInfoString(ACCOUNT_CURRENCY)), CLR_TEXT);
-
-   AddLine(L("Price", DoubleToString(g_f.bid, g_f.digits) + " / " +
-                      DoubleToString(g_f.ask, g_f.digits) +
-                      "   digits " + IntegerToString(g_f.digits)), CLR_TEXT);
-
-   AddLine(L("Tick", DoubleToString(g_f.tickSize, g_f.digits) +
-                      "   value " + DoubleToString(g_f.tickValue, 2) + " " +
-                      AccountInfoString(ACCOUNT_CURRENCY)), CLR_TEXT);
-
-   AddLine(L("Volume", DoubleToString(g_f.volMin, 2) + " - " +
-                      DoubleToString(g_f.volMax, 2) +
-                      "   step " + DoubleToString(g_f.volStep, 2) +
-                      "   stops " + IntegerToString(g_f.stopsLevel) + " pts"), CLR_TEXT);
-
-   AddLine(L("Data", (g_f.synced ? "synced" : "NOT synced") +
-                      StringFormat("   M5 %d   M15 %d   M30 %d",
-                                   LaneBars(PERIOD_M5),
-                                   LaneBars(PERIOD_M15),
-                                   LaneBars(PERIOD_M30))),
-           (g_f.synced ? CLR_TEXT : CLR_HOLD));
-   AddLine("", CLR_TEXT);
-
-   // ---------------------------------------------------------------
-   //  What it configured for itself
-   // ---------------------------------------------------------------
-   SectionTitle("SELF-CONFIG");
-
-   AddLine(L("Class", g_p.label + "   (" + g_p.basis + ")"),
-           (g_p.unconfirmed ? CLR_HOLD : CLR_VALUE));
-
-   int  m5 = LaneBars(PERIOD_M5);
-   bool warmOk = (m5 >= g_p.warmupBars);
-   AddLine(L("Warm-up", IntegerToString(g_p.warmupBars) + " bars   " +
-                        (warmOk ? "ready" : "DATA WAIT")),
-           (warmOk ? CLR_TEXT : CLR_HOLD));
-
-   AddLine(L("Stop buffer", IntegerToString(g_p.bufferTicks) + " ticks beyond a swing"), CLR_TEXT);
-
-   int sprN = 0;
-   double spreadBase = SpreadBaseline(hour, sprN);
-   string gate = StringFormat("%.1f x typical", g_p.spreadGateX);
-   if(spreadBase > 0.0)
-      gate += StringFormat("   typical %.1f pts (%d samples)", spreadBase, sprN);
-   else
-      gate += "   typical: sampling...";
-   AddLine(L("Spread gate", gate), CLR_TEXT);
-
-   string hourTxt;
-   if(g_hourDays[hour] > 0 && g_hourMove[hour] > 0.0 && g_f.point > 0.0)
-      hourTxt = StringFormat("%.1f pts (%d days)", g_hourMove[hour] / g_f.point, g_hourDays[hour]);
-   else
-      hourTxt = "not measured yet";
-
-   string recentTxt = "n/a";
-   if(g_recentMove > 0.0 && g_f.point > 0.0)
-      recentTxt = StringFormat("%.1f pts (%d bars)", g_recentMove / g_f.point, g_recentN);
-
-   AddLine(L("Hour " + IntegerToString(hour), hourTxt + "   recent " + recentTxt), CLR_TEXT);
-   AddLine(L("Adjust", g_p.note == "" ? "base profile" : g_p.note), CLR_DIM);
-   AddLine("", CLR_TEXT);
-
-   // ---------------------------------------------------------------
-   //  The broker's own session table
-   // ---------------------------------------------------------------
-   SectionTitle("BROKER SESSIONS");
-
-   AddLine(L("Published", (g_sessCount > 0
-                           ? IntegerToString(g_sessCount) + " entries / week, " +
-                             IntegerToString(CountSessionsForDay(st.day_of_week)) + " today"
-                           : "none - status falls back to quotes")), CLR_TEXT);
-
-   if(g_sessCount > 0)
-   {
-      AddLine(L("Today", TodayWindows(st.day_of_week, 2)), CLR_TEXT);
-      AddLine(L("Days", WeekdayList()), CLR_DIM);
-   }
-
-   AddLine("", CLR_TEXT);
-   AddLine(" No signals, no orders, no positions in this build.", CLR_DIM);
 }
 
 //  Rendered width of one character at a font size, using the real
@@ -1573,7 +1466,12 @@ void DrawPanel()
       if(w > maxW) maxW = w;
    }
 
-   int panelW = maxW + PANEL_PAD * 2;
+   //  TextGetSize and the rendered glyph advance can disagree by a
+   //  percent or two, and a line that renders a hair wide loses its
+   //  last characters against the panel edge.  A small proportional
+   //  margin removes that risk at no cost.
+   int slack  = MathMax(12, (int)(maxW * 0.04));
+   int panelW = maxW + PANEL_PAD * 2 + slack;
    int panelH = count * rowH + PANEL_PAD * 2;
    if(panelW < 300) panelW = 300;
 
@@ -1647,7 +1545,46 @@ void DumpDiscovery()
                g_p.warmupBars, g_p.bufferTicks, g_p.spreadGateX,
                g_p.sessionAware ? "yes" : "no");
    PrintFormat("  market      : %s - %s", g_m.headline, g_m.detail);
+
+   MqlDateTime st;
+   TimeToStruct(ServerNow(), st);
+
+   datetime utcNow = 0;
+   string   srcNote = "";
+   bool utcKnown = ResolveUtc(ServerNow(), utcNow, srcNote);
+
    PrintFormat("  sessions    : %d entries in this week's table", g_sessCount);
+   if(g_sessCount > 0)
+   {
+      PrintFormat("  today       : %s   (%d entries)", TodayWindows(st.day_of_week, 4),
+                  CountSessionsForDay(st.day_of_week));
+      PrintFormat("  weekdays    : %s", WeekdayList());
+   }
+   else
+      PrintFormat("  today       : none - status falls back to quote freshness");
+
+   string sessLine = "unknown (" + srcNote + ")";
+   if(utcKnown) sessLine = SessionLabel(utcNow);
+   PrintFormat("  session     : %s", sessLine);
+
+   //  The measurements behind the self-configuration.  The panel shows
+   //  the layout only, so these numbers are reported here where they
+   //  can still be checked.
+   int    sprN   = 0;
+   double sprBase = SpreadBaseline(st.hour, sprN);
+   int    m5Bars  = LaneBars(PERIOD_M5);
+
+   PrintFormat("  warm-up     : %d bars required, M5 has %d (%s)",
+               g_p.warmupBars, m5Bars, (m5Bars >= g_p.warmupBars ? "ready" : "DATA WAIT"));
+   PrintFormat("  measured    : hour %d median %.1f pts (%d days), recent %.1f pts (%d bars)",
+               st.hour,
+               (g_f.point > 0.0 ? g_hourMove[st.hour] / g_f.point : 0.0),
+               g_hourDays[st.hour],
+               (g_f.point > 0.0 ? g_recentMove / g_f.point : 0.0),
+               g_recentN);
+   PrintFormat("  spread      : current %d pts, typical %.1f pts (%d samples), gate %.2fx",
+               g_f.spreadPts, sprBase, sprN, g_p.spreadGateX);
+   PrintFormat("  adjustment  : %s", g_p.note == "" ? "base profile" : g_p.note);
 }
 
 //==================================================================

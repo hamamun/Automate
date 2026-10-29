@@ -78,13 +78,13 @@ UTC, so:
 
 ## The panel
 
-The layout is the interface sketch from `automate.md` section 7. Fields whose data does
-not exist yet are drawn as labels with blank values, so the frame stays the same from stage
-to stage and only the values fill in.
+The panel is the interface sketch from `automate.md` section 7 and nothing else. Fields
+whose data does not exist yet are drawn as labels with blank values, so the shape is final
+and only the values fill in.
 
 ```text
- AUTOMATE    EURUSDm  |  Forex  |  Hedging  |
- MARKET OPEN | Session: London (est.) | Spread: 8.0 pts
+ AUTOMATE    XAUUSDm  |  Metal  |  Hedging
+ MARKET OPEN | Session: London | Spread: 240.0 pts
 
  TF     TREND  REGIME   SCORE  SIGNAL  TRADE STATUS
  M5
@@ -97,39 +97,32 @@ to stage and only the values fill in.
  Size:                         Planned risk:
  Combined exposure:
  Diary:                        Unknown future costs:
+```
 
- DISCOVERY
- Description  Euro vs US Dollar
- Path         Standard\Forex\EURUSDm
- Calc mode    Forex   |   sector: Undefined
- Currencies   EUR / USD   account USD
- Price        1.11307 / 1.11315   digits 5
- Tick         0.00001   value 1.00 USD
- Volume       0.01 - 200.00   step 0.01   stops 0 pts
- Data         synced   M5 100259   M15 10013   M30 10036
+Fourteen lines, one screen, no scrolling. When the market is not open, one extra line appears
+under row 2 with the close reason and the next open time:
 
- SELF-CONFIG
- Class        Forex   (path, name, ccy, calc, desc)
- Warm-up      200 bars   ready
- Stop buffer  2 ticks beyond a swing
- Spread gate  2.0 x typical   typical 8.0 pts (5 samples)
- Hour 9       16.0 pts (12 days)   recent 15.0 pts (195 bars)
- Adjust       typical hour x1.07 -> base profile
-
- BROKER SESSIONS
- Published    6 entries / week, 1 today
- Today        00:00-24:00
- Days         Sun Mon Tue Wed Thu Fri
-
- No signals, no orders, no positions in this build.
+```text
+ MARKET CLOSED | Session: between sessions | Spread: 240.0 pts
+ next open Mon 2026.11.02 01:05 server (in 2d 3h)
 ```
 
 Columns match the sketch exactly: the timeframe table starts at characters 1, 8, 15, 24, 31
-and 39, and the two-column block puts its right column at character 30.
+and 39; the two-column block puts its right column at character 30.
 
-**Blank by design, not by accident:** the auto-trading flag, every trend / regime / score /
-signal column, the whole selected-plan block, exposure and the diary belong to later stages.
-They are present so the panel does not keep changing shape.
+**Blank by design:** the auto-trading flag, every trend / regime / score / signal column, the
+selected-plan block, exposure and the diary belong to later stages.
+
+**Not on the panel:** the discovery dump, the self-configuration numbers and the broker
+session table are still measured and still checked - they are written to the **Experts** tab
+when the EA attaches and whenever the profile is rebuilt. The panel shows only the layout.
+
+### The session name
+
+The session is a statement, not an estimate. It is the broker's own server clock read against
+real UTC with the EU and US daylight-saving rules applied. The only place a name cannot be
+produced is the Strategy Tester, where MT5 sets `TimeGMT()` equal to the simulated server
+clock; there the row reads `Session: unknown`.
 
 ### Look and feel
 
@@ -140,9 +133,9 @@ They are present so the panel does not keep changing shape.
   measured text height plus two pixels.
 - The market state carries colour on its own row while the session and spread beside it stay
   silver, so a red `MARKET CLOSED` does not turn the whole line red.
-- Width and height are measured from the text actually drawn. There are no panel inputs:
-  no X/Y, no width, no font size.
-- A full-day session reads `00:00-24:00` rather than the misleading `00:00-00:00`.
+- Width and height are measured from the text actually drawn, plus a 4 % margin so a line can
+  never lose its last characters against the panel edge. There are no panel inputs: no X/Y,
+  no width, no font size.
 
 ## Before compiling
 
@@ -158,15 +151,21 @@ replace MetaEditor - it only makes the cheap mistakes visible before you compile
 
 ## What to check while testing
 
-- The class label matches what the instrument really is.
-- `Description`, `Path` and `Calc mode` match the broker's specification window.
+On the chart:
+
+- The class label in row 1 matches what the instrument really is.
 - `MARKET OPEN` / `MARKET CLOSED` agrees with the broker's own trading hours.
-- On a weekend or holiday, `MARKET CLOSED` appears with a sensible next open.
+- On a weekend or holiday, `MARKET CLOSED` appears with a sensible next open and countdown.
 - A 24-hour symbol (crypto) never shows closed.
-- On a stock or index, the weekday list should not include Saturday/Sunday.
+- `Session` names the right region for the current server hour.
 - In the Strategy Tester, `Session` reads `unknown` — that is correct, not a bug.
-- After a few minutes the spread baseline fills in (`typical x pts (n samples)`).
-- The `Adjust` line changes when the server hour changes.
+
+In the **Experts** tab, where the discovery and self-configuration numbers are printed:
+
+- Description, path and calc mode match the broker's specification window.
+- The weekday list does not include Saturday/Sunday for a stock or index.
+- The spread baseline fills in after a few minutes (`typical x pts (n samples)`).
+- The adjustment line changes when the server hour changes.
 
 ## Limits, stated honestly
 
