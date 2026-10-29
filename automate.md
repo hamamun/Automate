@@ -1,6 +1,7 @@
 # Automate — a simple, self-configuring MT5 Expert Advisor
 
-**Status: implementation plan, not an implemented or proven EA.** This file is intended to be copied into a new repository and given to a new coding chat. It includes the decisions already made, recommended starting rules, and the checks needed to build them. The proposed signal, target and forecasting methods are hypotheses to test—not promises of accuracy or profit.
+**Status: implementation plan, will build step by step the EA.** It includes the decisions already made, recommended starting rules, and the checks needed to build them. The proposed signal, target and forecasting methods everythin will be tested by user and confirmed its functionality accordingly.
+**Hard rules:** 1. No fallback will be applicable here. 2. no fabricated items will be used. this will be the tools to real money trade so no falsification or fallback is allowed everything has to work.
 
 **Quick reading:** Section 1 gives the idea, section 5 explains risk, and section 7 shows the proposed interface. Section 9 is mainly for the future coding chat.
 
