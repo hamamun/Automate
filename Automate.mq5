@@ -24,7 +24,7 @@
 //|  measured; nothing needs to be typed in.                         |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "0.10"
+#property version   "1.00"
 #property description "Automate stage 1: self-discovery, automatic configuration, market and session status."
 #property description "No inputs. Sends no orders. Attach to any chart and timeframe."
 
