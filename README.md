@@ -68,10 +68,15 @@ whole life is about 20 bars, so it is already 14 bars old. They can never disagr
 The median of those survivors is the bar count. That is why it changes as a trend ages:
 a 2-bar-old trend and a 40-bar-old trend have different histories behind them.
 
-**When there is no number.** If fewer than 6 past trends outlived the current one, the
-cell shows just `UP` and the tooltip explains why. That happens when the trend has
-already run longer than almost anything in its history — in which case there is nothing
-honest to say.
+**When there is no number.** Two different reasons, told apart on the panel:
+
+| Cell | Means |
+|---|---|
+| `UP Max` | this trend has already run longer than any trend on record — there is nothing honest to predict |
+| `UP` | too few past trends got this far yet — usually the first hours after attaching |
+
+Both explain themselves on hover. `Max` is the interesting one: it means you are in
+unusual territory, not that the EA is still warming up.
 
 **Merged from AGE.** An older build had a separate AGE column showing `14/11`
 (age / typical length). It was removed: the surviving-run figure above already contains
@@ -191,8 +196,8 @@ cheap mistakes visible before you compile.
 On the chart:
 
 - `TREND` on all three lanes is not permanently `FLAT`.
-- `TREND` and `REGIME` show a forward number (`UP 6/30%L`), not a bare label. If they
-  stay bare for more than a few bars, the run history did not seed at attach.
+- `TREND` and `REGIME` show a forward number (`UP 6/30%L`), not a bare label. A bare label
+  for hours means the run history did not seed at attach; `UP Max` is a real reading.
 - Hovering a TREND or REGIME cell shows the plain-language explanation.
 - `SCORE` shows values other than `3/3` — if every row is always `3/3`, two votes are
   copies of each other and the score is meaningless.
@@ -219,8 +224,10 @@ In the **Experts** tab:
   only 4.9 % of bars below 20 %. It is a warning light near the end, not a countdown.
 - **The answer is wide, not tight.** Run lengths are heavy-tailed, so the cell shows one
   number but the hover gives the interquartile range - often something like "18 to 96 more".
-- **About 4 % of bars get no estimate.** That is when the current run has already outlasted
-  nearly everything in its history; the cell shows the label alone and the tooltip says why.
+- **Some bars carry no number.** Coverage grows as history builds: about 70 % of bars in the
+  first ~2 000, 85–92 % after that, and effectively 100 % once the 400-run history is full.
+  A bare `UP` means not enough past runs got this far; `UP Max` means the run is longer than
+  anything on record.
 - **No forward price projection.** The Kalman predict step would have given one; it was
   dropped when the filter was. Nothing is claimed in its place.
 - **Direction has no measured edge.** `SimpleEA`'s own harness found pure direction is a

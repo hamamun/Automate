@@ -315,11 +315,28 @@ pctLeft  = 100 x barsLeft / (age + barsLeft)
 The two displayed numbers are therefore one estimate, not two.
 
 **Coverage.** Six survivors are required before a claim is made, and the last 400
-completed runs are kept per lane. Measured on 26 728 bars of the real vote logic,
-**95.7 % of bars carry a number**; the 4.3 % that fall short are runs that have
-already outlasted almost everything in that lane's history, where the honest answer
-is "this is older than anything we have seen". The tooltip says exactly that instead
-of inventing a number.
+completed runs are kept per lane. Coverage grows as that history fills, measured on
+the real vote logic:
+
+| bars since attach | carries a number |
+|---|---|
+| 0 - 2 000 | 69 % |
+| 4 000 - 8 000 | 85 - 87 % |
+| 10 000 - 12 000 | 92 % |
+| once the 400-run history is full | ~100 % |
+
+**The two ways a cell can come back empty are not the same thing**, and the panel
+distinguishes them:
+
+| Cell | Cause |
+|---|---|
+| `UP Max` | the run is already longer than every run on record |
+| `UP` | fewer than six past runs got this far |
+
+`Max` is a real reading about an unusual run; a bare label is mainly a cold-start
+condition. Both explain themselves on hover. The condition for `Max` is exact -
+age >= the longest stored run - which also means zero survivors, so a cell can never
+show a number and `Max` at the same time.
 
 **What the numbers actually look like.** Same run:
 
@@ -490,7 +507,7 @@ answers the only question worth asking of a live panel: **how much longer**.
  TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
  M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
- M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
+ M30    DOWN Max     Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
  Selected:                    Entry:
  SL:                          TP:
@@ -501,13 +518,14 @@ answers the only question worth asking of a live panel: **how much longer**.
 ```
 
 `6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
-still ahead. `L` = left, and it applies to both numbers.
+still ahead. `L` = left, and it applies to both numbers. `Max` = this run is already
+longer than any run on record for that lane, so no number is claimed.
 
 | Column | Character | Width | Contents |
 |---|---|---|---|
 | TF | 1 | 7 | `M5` `M15` `M30` |
-| TREND | 8 | 14 | `UP 6/30%L`, or just `UP` when there is no estimate |
-| REGIME | 22 | 16 | `Steady 12/45%L`, or just the label |
+| TREND | 8 | 14 | `UP 6/30%L`, `UP Max`, or just `UP` |
+| REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
 | SCORE | 38 | 7 | `3/3` … `0/3` |
 | SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
 | TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
@@ -546,6 +564,9 @@ The panel carries no legend, by request. Each cell explains itself on hover:
 | SCORE cell | "2 of 3 votes agree. Trend 1, momentum 1, structure 0." |
 | SIGNAL cell | "BUY or SELL needs 2 of the 3 votes to agree." |
 | TRADE STATUS | "Nothing is sent to the broker in this build." |
+
+The `Max` hover reads: *"M30 trend DOWN has already run 61 bars - longer than any run in
+its history (longest 58). Shown as Max: no honest estimate of what is left."*
 
 When a run has already outlasted every run in its history the tooltip says so
 plainly instead of inventing a number:
@@ -590,7 +611,7 @@ plain. Text always carries the meaning.
    | regime | Steady 81.1 %, Mixed 11.4 %, Choppy 7.5 %, median run **38 bars** |
    | score | every value from -3 to +3 occurs, -3 16.9 %, +3 20.2 % |
    | signal | fires on 63.4 % of bars |
-   | remaining-life coverage | 95.7 % of bars show a number |
+   | remaining-life coverage | 69 % at attach, 85-92 % mid, ~100 % with full history |
    | remaining-life zeros | 0.0 % - the rejected formula gave 64.8 % |
    | widest rendered cell | TREND 12 of 14, REGIME 15 of 16 |
 

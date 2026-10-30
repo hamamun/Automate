@@ -1599,9 +1599,19 @@ string MinutesText(int bars, int minsPerBar)
 
 //  One cell: "UP 6/30%L".  If it would not fit its column the bars are
 //  dropped first, then the estimate, so alignment can never break.
-string LeftCell(string label, int barsLeft, int pctLeft, bool ok, int maxW)
+string LeftCell(string label, int barsLeft, int pctLeft, bool ok, bool over, int maxW)
 {
-   if(!ok) return(label);
+   if(!ok)
+   {
+      //  The run has outlasted every run on record: say so instead of
+      //  inventing a number. "Max" needs no explanation once seen once.
+      if(over)
+      {
+         string overTxt = label + " Max";
+         if(StringLen(overTxt) <= maxW) return(overTxt);
+      }
+      return(label);
+   }
 
    string withBars = label + " " + IntegerToString(barsLeft) + "/" +
                      IntegerToString(pctLeft) + "%L";
@@ -1990,13 +2000,22 @@ void LaneRow(int idx)
       trendClr  = TrendColour(g_lane[idx].trend);
       signalClr = SignalColour(g_lane[idx].signal);
 
+      //  Longest completed run each channel has seen. Decided once here so
+      //  the cell and the tooltip can never disagree about it.
+      int  seenTrend  = MaxRun(idx * 2);
+      int  seenRegime = MaxRun(idx * 2 + 1);
+      bool overTrend  = (seenTrend  > 0 && !g_lane[idx].trendLeftOk  &&
+                         g_lane[idx].trendAge  >= seenTrend);
+      bool overRegime = (seenRegime > 0 && !g_lane[idx].regimeLeftOk &&
+                         g_lane[idx].regimeAge >= seenRegime);
+
       trendTxt  = LeftCell(TrendText(g_lane[idx].trend),
                            g_lane[idx].trendLeft, g_lane[idx].trendLeftPct,
-                           g_lane[idx].trendLeftOk, LANE_TREND_W);
+                           g_lane[idx].trendLeftOk, overTrend, LANE_TREND_W);
 
       regimeTxt = LeftCell(RegimeText(g_lane[idx].regime),
                            g_lane[idx].regimeLeft, g_lane[idx].regimeLeftPct,
-                           g_lane[idx].regimeLeftOk, LANE_REGIME_W);
+                           g_lane[idx].regimeLeftOk, overRegime, LANE_REGIME_W);
 
       scoreTxt  = ScoreText(g_lane[idx].score);
       signalTxt = SignalText(g_lane[idx].signal);
@@ -2017,16 +2036,16 @@ void LaneRow(int idx)
       else
       {
          int done = g_lane[idx].trendAge;
-         int seen = MaxRun(idx * 2);
-         if(seen > 0 && done >= seen)
+         if(overTrend)
             trendTip = StringFormat(
                "%s trend %s has already run %d bars - longer than any run in its "
-               "history (longest %d). No honest estimate of what is left.",
-               tfName, TrendText(g_lane[idx].trend), done, seen);
+               "history (longest %d). Shown as Max: no honest estimate of what "
+               "is left.",
+               tfName, TrendText(g_lane[idx].trend), done, seenTrend);
          else
             trendTip = StringFormat(
-               "%s trend %s. Not enough completed runs yet to say how much longer "
-               "it lasts. Age so far: %d bars.",
+               "%s trend %s. Too few past runs got this far to say how much "
+               "longer it lasts. Age so far: %d bars.",
                tfName, TrendText(g_lane[idx].trend), done);
       }
 
@@ -2044,16 +2063,16 @@ void LaneRow(int idx)
       else
       {
          int done = g_lane[idx].regimeAge;
-         int seen = MaxRun(idx * 2 + 1);
-         if(seen > 0 && done >= seen)
+         if(overRegime)
             regimeTip = StringFormat(
                "%s regime %s has already run %d bars - longer than any run in its "
-               "history (longest %d). No honest estimate of what is left.",
-               tfName, RegimeText(g_lane[idx].regime), done, seen);
+               "history (longest %d). Shown as Max: no honest estimate of what "
+               "is left.",
+               tfName, RegimeText(g_lane[idx].regime), done, seenRegime);
          else
             regimeTip = StringFormat(
-               "%s regime %s. Not enough completed runs yet to say how much longer "
-               "it lasts. Age so far: %d bars.",
+               "%s regime %s. Too few past runs got this far to say how much "
+               "longer it lasts. Age so far: %d bars.",
                tfName, RegimeText(g_lane[idx].regime), done);
       }
 
