@@ -1,0 +1,524 @@
+# Autotrade — stage 2 design record
+
+**Status: design record, updated after measurement. Stage 2 is implemented.**
+
+This file records the decisions taken while planning stage 2 (trend, regime, score,
+signal) and the reasoning behind each one. It sits alongside `automate.md`, which remains
+the original plan. Where this file differs from `automate.md`, this file is the later
+decision and says why.
+
+Stage 1 (discovery, self-configuration, market and session status) is built, merged and
+verified in MetaEditor with 0 errors. Stage 2 is built in the same file; the panel now
+carries TREND, AGE, REGIME, SCORE and SIGNAL.
+
+Sections 5, 7, 9 and 10 were rewritten after the trend filter was measured rather than
+argued about. What changed and why is in section 10.4 - the short version is that the
+Ehlers bandpass turned out not to measure direction at all, so the trend vote is built
+from a regression slope and the bandpass is kept as a logged comparison.
+
+---
+
+## 1. Scope
+
+**In stage 2:** per lane, on each closed bar of its own timeframe:
+
+- a trend direction and how long it has been in that direction
+- a regime label and how long *it* has lasted
+- three independent votes, a score, and a signed signal
+
+**Not in stage 2:** entries, stops, targets, lot size, orders, the diary. Those are stage 3
+and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trading build.
+
+---
+
+## 2. Locked decisions
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | Regime window is **time-equalised across lanes** | 20 bars is 100 minutes on M5 and 10 hours on M30, so the three labels would describe three different markets and disagree for reasons unrelated to price. SimpleEA hit this exact defect and fixed it the same way. |
+| D2 | An **AGE** column is added to the panel | The honest answer to "how long will this last" is the age of the current state against its own history, not a predicted switch bar. |
+| D3 | No forward prediction of "the bar it changes" | No tool can do this. See section 8. |
+| D4 | Votes stay **separate and visible**, never multiplied together | `v1 × v2 × v3` collapses to binary and hides which vote disagreed, which is the most useful diagnostic available. |
+| D5 | The regime label **never vetoes** a signal | Per `automate.md`. It is context. If it ever gains teeth that is a separate, explicit decision. |
+| D6 | No user inputs, including for stage 2 | Constants are internal candidates, documented in section 9. |
+| D7 | Trend = **regression slope over 30 bars**, in units of a typical bar | Measured, not argued: it beats both Kalman and the Ehlers bandpass on every test in section 10.4. |
+| D8 | Everything is **causal** — closed bars only, no future-smoothed values | A number on screen must never be built from a bar that had not finished. |
+
+---
+
+## 3. The measurement stack
+
+Three layers, each used by more than one consumer. This is why stage 2 is built in one
+piece rather than split.
+
+### 3.1 The size of an ordinary bar
+
+```
+changes[i] = close[i] - close[i-1]            last 20 closed bars
+med        = median( |changes| )              the typical size of a bar
+```
+
+`med` is the only scale the engine needs. Every threshold below is expressed as a
+multiple of it, which is what lets one constant serve gold at 3 500 and EURUSD at 1.08.
+The Kalman draft also carried a robust `sigma` and a measurement-noise `R`; with the
+filter gone both had no consumer and were removed.
+
+### 3.2 Deadbands
+
+```
+trendBand(ratio)  = 0.20                       in units of med, section 5
+moveBand(horizon) = max( 1.00 x tickSize, 0.50 x med x sqrt(horizon) )
+```
+
+A vote may only be non-zero when the measurement clears its band. Without this a flat
+symbol produces a constant stream of signals.
+
+The move band is scaled by `sqrt(horizon)` because a 2-bar move and a 20-bar move are not
+the same size. A fixed multiple of a single bar's movement - the original draft - sat far
+below the natural width of both, so neither vote ever abstained.
+
+### 3.3 One drift score, replacing two efficiency ratios
+
+The earlier draft had two efficiency ratios: `ER_fast` fed the Kalman filter's process
+noise, `ER_regime` fed the regime label. The filter is gone (section 10.4), so `ER_fast`
+had no consumer and was deleted rather than kept "in case".
+
+`ER_regime` was also replaced. Measurement showed a plain efficiency ratio is **not
+comparable across window lengths**, which destroys the point of equalising: over 1536 bars
+a driftless walk produces `ER x sqrt(N)` of 0.60, over 256 bars the same walk produces
+1.08. A threshold that means "trending" on M30 means "noise" on M5.
+
+The replacement is the standardised net move:
+
+```
+z = ( close[now] - close[now - N] ) / ( sd(bar changes over N) x sqrt(N) )
+```
+
+For a driftless series `z` is `N(0,1)` **at any N**, so the same threshold is meaningful on
+all three lanes. `|z|` also has a plain reading: 2.0 means the move over the span is two
+standard deviations of what no-drift would produce.
+
+Measured, 400 windows each (section 13 repeats this):
+
+| Underlying market | mean abs(z) | Steady | Mixed | Choppy |
+|---|---|---|---|---|
+| pure noise | 0.79 | 4.5 % | 27.0 % | 68.5 % |
+| weak drift | 1.30 | 20.2 % | 41.2 % | 38.5 % |
+| medium drift | 3.03 | 83.8 % | 13.5 % | 2.8 % |
+| strong drift | 7.32 | 100.0 % | 0.0 % | 0.0 % |
+
+That is a label that means something: on noise it nearly always says Choppy.
+
+---
+
+## 4. Windows, and why they are equalised
+
+### 4.1 The problem
+
+| Lane | 20 bars is | 128 hours is |
+|---|---|---|
+| M5 | 100 minutes | 1536 bars |
+| M15 | 5 hours | 512 bars |
+| M30 | 10 hours | 256 bars |
+
+A 20-bar ER on M5 samples a coffee break; on M30 it samples half a trading day. Comparing
+those three numbers is comparing three different questions.
+
+### 4.2 The decision
+
+Votes that must react quickly stay **per-lane in bars**. The regime label becomes
+**per-lane in hours**, so all three describe the same stretch of market.
+
+| Quantity | Unit | M5 | M15 | M30 |
+|---|---|---|---|---|
+| momentum window | bars | 2 | 2 | 2 |
+| structure window | bars | 20 | 20 | 20 |
+| drift span for `z` | **hours** | 128 h → 1536 bars | 128 h → 512 bars | 128 h → 256 bars |
+| closed bars loaded | bars | 1537 | 513 | 450 |
+
+
+128 hours is 5.3 days: enough to span every weekday session at least once. This is a
+**candidate**, not a law — it is the number SimpleEA arrived at and the one I would test
+first.
+
+**Consequence:** stage 1 showed `M5 100259 bars` on the user's terminal, so history depth is
+not a problem in practice. On a symbol with shallow history the lane shows `DATA WAIT`
+rather than reading a regime from half a window.
+
+---
+
+## 5. The trend vote
+
+```
+slope  = least-squares slope of close over the last 30 closed bars   (price per bar)
+med    = median |bar change| over the last 20 closed bars            (price per bar)
+ratio  = slope / med                                                 (dimensionless)
+
+trendVote = +1  if ratio >  0.20
+          = -1  if ratio < -0.20
+          =  0  otherwise
+```
+
+Dividing by `med` is what makes this work on any symbol without a setting: gold at 3 500
+and EURUSD at 1.08 both come out as "how many ordinary bars per bar did this move".
+
+### 5.1 Choosing the window and the band
+
+Two things had to be picked, so both were measured. The score is the fraction of bars
+where the vote's sign matched the next 20-bar move, and the run length is how many bars
+the vote holds before it changes - which matters because the AGE column is built on it.
+
+| Slope window | Band | FLAT | median run | hit at 20 bars |
+|---|---|---|---|---|
+| 20 | 0.10 | 11 % | 6 | 74.6 % |
+| 20 | 0.20 | 22 % | 8 | 78.1 % |
+| 30 | 0.20 | 26 % | 12 | **77.8 %** |
+| 50 | 0.10 | 18 % | 17 | 73.0 % |
+| 50 | 0.20 | 32 % | 19 | 77.3 % |
+| 100 | 0.20 | 38 % | 18 | 72.4 % |
+
+A 20-bar window with a 0.10 band produces a vote that changes every ~6 bars. That is
+accurate enough, but an AGE built on a six-bar flicker says nothing. The chosen setting is
+**30 bars, band 0.20**: twice the run length of the original guess, the best measured hit
+rate at the 20-bar horizon, at the cost of more FLAT.
+
+### 5.2 What FLAT means
+
+On pure noise the vote is FLAT about half the time (UP 26.7 %, DOWN 23.7 %, FLAT 49.7 %,
+300 windows). That is not a defect - on a random walk there usually is no trend, and
+saying so is the correct answer. With drift present the same setting is decisive:
+
+| Underlying market | UP | DOWN | FLAT |
+|---|---|---|---|
+| pure noise | 26.7 % | 23.7 % | 49.7 % |
+| weak drift | 47.3 % | 9.3 % | 43.3 % |
+| strong drift | 97.0 % | 0.0 % | 3.0 % |
+
+### 5.3 What happened to forward projection
+
+With no state covariance there is no cone to draw. The one forward number available -
+Ehlers' own rate of change - is computed and logged, but it measured as a coin flip
+(section 10) and is not shown on the panel. Section 8.3 records what is deferred.
+
+---
+
+## 6. The other two votes
+
+**Momentum** — the signed two-bar close change against `moveBand(2)`. Fast, deliberately crude,
+and independent of the filter.
+
+**Structure** — the signed 20-bar close change against `moveBand(20)`, then checked
+against confirmed 3-bar pivots (one closed bar on each side):
+
+- a BUY vote is withdrawn when the two most recent confirmed swing lows are making lower lows
+- a SELL vote is withdrawn when the two most recent swing highs are making higher highs
+- a missing swing pair does **not** withdraw the vote — only a missing price history does
+
+This is the vote that must stay genuinely independent. SimpleEA's source notes that its
+third vote used to be a copy of its first, which is why 2/3 could never occur and every
+trade became a market order. The same failure is available here if structure is ever
+"helpfully" derived from the filter output.
+
+### Score and signal
+
+```
+score  = trendVote + momentumVote + structureVote      range -3 .. +3
+signal = +1 (BUY)  if score >= +2
+       = -1 (SELL) if score <= -2
+       =  0        otherwise
+```
+
+The panel shows `3/3`, `2/3`, `1/3`, `0/3` — **agreement, never a probability**.
+
+Measured on synthetic data during design: a Gaussian random walk reaches 3/3 in roughly a
+third of trials. That is the number to keep in mind whenever the panel looks confident.
+
+---
+
+## 7. Regime
+
+```
+z = standardised net move over the equalised span, section 3.3
+
+Steady  if |z| >= 2.0
+Mixed   if |z| >= 1.0
+Choppy  otherwise
+```
+
+Computed on the lane's own bars over an equalised span, so M5/M15/M30 describe the same
+stretch of market. Measured on one 5-minute series aggregated to 15 and 30 minutes
+(200 trials): **all three lanes agree 94.5 % of the time, two of three 6.0 %, all three
+different 1.0 %.** Persistent disagreement on a live chart is therefore a bug, not a
+market condition.
+
+**Context only.** The label does not block, mute or downgrade a signal (D5). A valid BUY
+in Choppy is still shown as BUY.
+
+---
+
+## 8. Age, and the honest version of "future bars"
+
+### 8.1 What is refused
+
+There is no reliable estimator of **the bar on which a trend or regime changes**. Three
+legitimate tools exist and every one of them returns a *duration*, never a date:
+
+| Tool | Gives | Honest limit |
+|---|---|---|
+| First-passage time (inverse Gaussian) | expected bars to a level, `E[τ] = a/ν`, `Var = aσ²/ν³` | **with zero drift the expected time is infinite** — the maths says a driftless move has no reliable arrival time |
+| OU / AR(1) half-life | `ln(2)/κ`, bars for a deviation to halve | a time scale, not a switch bar |
+| Markov dwell time | `1/(1-p_ii)` from an empirical transition matrix | an average, never a date |
+| Ehlers dominant cycle | cycle length in bars from Hilbert phase | "anticipating" turning points, in Ehlers' own wording, not predicting them |
+
+Even with real drift the median first-passage time sits far below the mean and the spread is
+enormous. "Bar 4" can be arithmetically correct and practically useless.
+
+### 8.2 What is built instead
+
+**Age tracking.** For each lane, and separately for trend direction and for regime label:
+
+- count how many consecutive bars the current state has lasted
+- keep the last 200 completed run lengths for that lane and state
+- report the current age and the median completed run
+
+**Seeded, not learned from zero.** Measuring found that a cold start leaves the median
+empty for 538 bars - 45 hours on M5 and **11 days on M30** - which makes the column useless
+for its first week. So at attach each lane replays the vote over 400 already-closed bars it
+has loaded. This is not look-ahead: every bar in the replay is finished, and the vote at
+bar *i* uses only bars before *i*, so the replay produces exactly the numbers the EA would
+have printed had it been running. Verified against ground truth - a 400-bar replay gives
+the same age and the same median as an EA that had tracked every bar from the start.
+
+Cost is one pass per lane at attach: about 1 M operations in total, once.
+
+Panel cell: `6/11` = this state is 6 bars old, the median completed run was 11.
+
+This answers the user's question — *how long will it last, how unusual is this* — from the
+symbol's own history, with no inputs and no pretence of knowing the switch bar. It also
+self-adapts per symbol and per lane, because it is measured, not configured.
+
+States tracked:
+
+| Tracked | Resets when |
+|---|---|
+| trend UP / DOWN / FLAT | the trend vote changes value |
+| regime Steady / Mixed / Choppy | the regime label changes |
+
+### 8.3 Forward projection — deferred, and now for a better reason
+
+The earlier plan projected `level + k x slope` with a widening covariance from a Kalman
+filter. There is no Kalman filter any more, and measurement (section 10.4) showed the only
+other forward number available - Ehlers' rate of change - is a coin flip. Drawing a cone
+from either would be decoration.
+
+What is kept is the honest one: the current run against its own history. That answers
+*how long has this lasted and how unusual is that* without claiming to know the date. A
+cone comes back in stage 3, where there is a target for it to be measured against.
+
+---
+
+## 9. Constants — all internal, all candidates
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `CHANGE_WINDOW` | 20 | bars for the typical-bar size `med` |
+| `TREND_PERIOD` | 30 | regression window for the trend vote |
+| `STRUCTURE_PERIOD` | 20 | net-move window for the structure vote |
+| `MOMENTUM_PERIOD` | 2 | two-bar close change |
+| `PIVOT_WING` | 1 | 3-bar pivot: one closed bar each side |
+| `REGIME_HOURS` | 128 | equalised drift span |
+| `Z_STEADY` / `Z_MIXED` | 2.0 / 1.0 | regime boundaries in standard deviations |
+| `TREND_BAND_X` | 0.20 | trend deadband, in units of `med` |
+| `MOVE_BAND_X` | 0.50 | move deadband = `0.50 x med x sqrt(horizon)` |
+| `MOVE_BAND_TICKS` | 1.00 | floor of the move deadband, in ticks |
+| `AGE_HISTORY` | 200 | completed runs kept per state |
+| `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
+
+None of these is a user input (D6). Each is a starting candidate to be replaced only by a
+measurement.
+
+**Why `MOVE_BAND_X` is 0.50 and not 0.10.** The earlier draft used
+`max(1 tick, 0.10 x med)`. But `med` is the size of a *one-bar* move, while the momentum
+vote looks at two bars and the structure vote at twenty. A deadband of 0.10 bars against a
+move that is naturally 1.4 or 4.5 bars wide almost never triggered, so both votes were
+effectively `sign(net move)` with no filter at all. Scaling by `sqrt(horizon)` puts the
+band at half the size a driftless market would produce, which is what a deadband should be.
+
+---
+
+## 10. Trend: what was measured, and what it changed
+
+### 10.1 The three candidates
+
+| Candidate | What it is |
+|---|---|
+| **Kalman, two states** | explicit model of level and slope with a covariance; the filtered slope is the vote |
+| **Ehlers Precision Trend** | bandpass from two 3-pole high-pass filters, `HP(P,L1) - HP(P,L2)`; the sign is the vote |
+| **Regression slope** | least-squares slope over 30 bars, divided by the typical bar |
+
+### 10.2 Why measurement replaced argument
+
+Two rounds of advice were given on properties - Kalman first, then Ehlers - and both were
+opinion. So the three were put on the same synthetic data and scored the only way that
+matters: **does the sign at bar *t* match the direction of the next *h* bars?**
+
+Thirty runs per cell, 1 400 bars each, warm-up 500 bars. 50 % is a coin flip.
+
+| Market | h | Ehlers | Ehlers ROC | net 20 bars |
+|---|---|---|---|---|
+| driftless walk | 20 | 49.7 % | 49.6 % | 48.7 % |
+| AR(1) momentum, phi 0.40 | 20 | 50.1 % | 51.3 % | 49.9 % |
+| regime-switching drift | 20 | 51.3 % | 49.7 % | **73.6 %** |
+| same, swings of 20-50 bars | 5 | 72.3 % | 47.1 % | **78.2 %** |
+| same, swings of 150-400 bars | 5 | 52.1 % | 48.6 % | **84.7 %** |
+
+A second test asked whether the sign tracks a *constant* drift:
+
+| Underlying drift | Ehlers | net 20 bars |
+|---|---|---|
+| weak | 50.0 % | 59.2 % |
+| medium | 50.0 % | 74.2 % |
+| strong | 51.7 % | **99.2 %** |
+
+### 10.3 The finding
+
+**The Ehlers bandpass does not measure direction.** Its sign is a coin flip against
+persistent drift, and it only works when the swing is *faster* than its own passband
+(72 % at 20-50-bar swings, 52 % at 150-400-bar swings). That is not a tuning problem: the
+filter is a difference of two high-passes, so it has a double zero at zero frequency and
+therefore removes exactly the slow drift a trend column is supposed to report. It is a
+cycle-phase oscillator being asked to do a direction job.
+
+This is not a surprising result in hindsight. `SimpleEA`'s own research harness reported
+"pure direction is a coin flip, 48-52 % hit on liquid FX" - the same number, from the same
+indicator, measured on real data instead of synthetic.
+
+The Kalman slope was never reachable: no repository in the family has a working one, so
+there was nothing to compare it against.
+
+### 10.4 The decision
+
+**Trend vote = regression slope, section 5.** It beat both other candidates on every row
+of every test, it needs no fitting, and it is one subtraction and one division per bar.
+
+**The Ehlers bandpass is still built**, because a claim should be checkable on the user's
+own broker rather than on my synthetic series. On every closed bar the EA compares
+`sign(Ehlers trend)` with the trend vote, counts agreements, and prints the tally to the
+Experts log once an hour:
+
+```
+Ehlers vs slope: 812 agree, 96 disagree (89.4% agree) over 908 closed bars
+```
+
+The expectation from the table above is close to 50 % agreement on a quiet symbol. If the
+live chart shows clearly better than that, the measurement in this section was wrong for
+that instrument and the bandpass earns its place back. That is the reversal test, and it
+costs one line to read.
+
+### 10.5 What is genuinely lost
+
+The Kalman predict step was the only defensible forward projection, and it is gone with
+the filter. No replacement is claimed. Section 8.3 records the consequence honestly: the
+panel reports duration-so-far, not duration-remaining.
+
+---
+
+## 11. Panel
+
+AGE is the one column added to the `automate.md` sketch; the others shift right to make
+room. AGE shows the **trend's** age, because it sits next to TREND. The regime's age is
+measured and written to the Experts log, not shown.
+
+```text
+ AUTOMATE    XAUUSDm  |  Metal  |  Hedging
+ MARKET OPEN | Session: London | Spread: 240.0 pts
+
+ TF     TREND  AGE    REGIME   SCORE  SIGNAL    TRADE STATUS
+ M5     UP     6/11   Steady   3/3    BUY       SIGNAL ONLY
+ M15    UP     2/11   Mixed    2/3    BUY       SIGNAL ONLY
+ M30    DOWN   14/11  Choppy   1/3    NO SIGNAL SIGNAL ONLY
+
+ Selected:                    Entry:
+ SL:                          TP:
+ Entry timing:                TP estimate:
+ Size:                         Planned risk:
+ Combined exposure:
+ Diary:                        Unknown future costs:
+```
+
+| Column | Character | Contents |
+|---|---|---|
+| TF | 1 | `M5` `M15` `M30` |
+| TREND | 8 | `UP` `DOWN` `FLAT` |
+| AGE | 15 | `current/median` in bars, `-` until history exists |
+| REGIME | 22 | `Steady` `Mixed` `Choppy` |
+| SCORE | 31 | `3/3` … `0/3` |
+| SIGNAL | 38 | `BUY` `SELL` `NO SIGNAL` — 10 wide, because the longest value plus one separating space needs 10 |
+| TRADE STATUS | 48 | `SIGNAL ONLY`, `DATA WAIT` |
+
+Still blank: the auto-trading flag, every row of the plan block, exposure, diary.
+
+Colour: TREND and SIGNAL carry direction colour; REGIME is plain text; AGE and TRADE
+STATUS are dim. Text always carries the meaning.
+
+---
+
+## 12. What will not be built
+
+| Not built | Reason |
+|---|---|
+| A predicted bar for a regime or trend change | no honest estimator exists, section 8.1 |
+| A "probability of winning" | agreement of correlated measurements is not a probability |
+| ATR in any entry, stop or target | prohibited by `automate.md` |
+| Per-symbol-class window lengths | would make forex and gold different strategies; the tick floor and the deadband carry the symbol difference, the window does not |
+| Multiplied votes | hides which vote disagreed |
+| A regime veto | D5, and it is a separate decision if ever wanted |
+| Self-learning that rewrites the signal | out of scope; the diary stays observational |
+
+---
+
+## 13. Validation
+
+1. `python3 tools/preflight.py Automate.mq5` - clean.
+2. Compile in MetaEditor - 0 errors, 0 warnings.
+3. Calibration tables, produced before the constants were written into the EA:
+   - regime label - 400 windows, section 3.3;
+   - trend vote, window and band - section 5.1, band response - section 5.2;
+   - three lanes on one series - 94.5 % agreement, section 7.
+4. A bar-by-bar simulation of the finished engine - the same code path the EA runs, ages
+   included - over 13 200 bars of regime-switching price:
+
+   | Quantity | Result |
+   |---|---|
+   | trend vote | UP 39.8 %, DOWN 34.3 %, FLAT 26.0 %, median run **12 bars** |
+   | regime | Steady 81.1 %, Mixed 11.4 %, Choppy 7.5 %, median run **38 bars** |
+   | score | every value from -3 to +3 occurs, -3 16.9 %, +3 20.2 % |
+   | signal | fires on 63.4 % of bars |
+
+   Both AGE medians are non-zero and plausible, which is what the column needs to mean
+   anything. Every score occurs, so `2/3` and `1/3` are real states and the three votes
+   are not copies of each other.
+
+   The 63.4 % signal rate looks high and is: this series spends half its life in a strong
+   drift, and three votes measuring recent direction agree in a drift. On pure noise the
+   same engine fires on about 47 % of bars. That is the correct behaviour for an agreement
+   count at a 2-of-3 threshold, and it is exactly why the panel says `SIGNAL ONLY` rather
+   than implying an edge.
+5. On the live chart: M5/M15/M30 regime labels should usually agree, because they now
+   measure the same span. Persistent disagreement is a bug, not a market condition.
+6. Confirm in the Experts log that the lanes report `DATA WAIT` on a symbol with shallow
+   history rather than reading a regime from half a window.
+7. Read `Ehlers vs slope` in the Experts log after a day. Near 50 % agreement confirms
+   section 10.4 on this broker's data; much higher reopens the decision.
+
+---
+
+## 14. Open questions
+
+| # | Question | Status |
+|---|---|---|
+| Q1 | Regime window equalised | **decided**, 128 h candidate |
+| Q2 | AGE column | **decided**, added |
+| Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
+| Q4 | Should AGE also be tracked for the SIGNAL itself | open - the code tracks TREND and REGIME only |
+| Q5 | Should regime boundaries be per-class | open - currently one set for every symbol. The measurement says no: `z` is scale-free |

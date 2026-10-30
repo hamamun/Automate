@@ -23,7 +23,7 @@ for o, c in [('{','}'), ('(',')'), ('[',']')]:
     chk(f"balanced {o}{c}", s.count(o) == s.count(c), f"{s.count(o)}/{s.count(c)}")
 
 # duplicate file-scope declarations
-TYPE = r'(?:string|int|double|long|ulong|bool|color|datetime|uint|float|char|short|uchar|ushort|SymbolFacts|AssetProfile|MarketState|SessionRec)'
+TYPE = r'(?:string|int|double|long|ulong|bool|color|datetime|uint|float|char|short|uchar|ushort|SymbolFacts|AssetProfile|MarketState|SessionRec|LaneState)'
 depth, decls = 0, collections.defaultdict(list)
 for ln, raw in enumerate(s.split('\n'), start=1):
     st = raw.strip()
@@ -50,7 +50,8 @@ ArraySetAsSeries CopyRates Bars SymbolInfoString SymbolInfoInteger SymbolInfoDou
 SymbolInfoSessionTrade SymbolIsSynchronized ObjectsDeleteAll ObjectCreate ObjectDelete ObjectFind
 ObjectGetString ObjectSetString ObjectSetInteger ChartRedraw ChartGetInteger EventSetTimer EventKillTimer
 GetTickCount AccountInfoInteger AccountInfoString TerminalInfoInteger MQLInfoInteger Period EnumToString
-TextSetFont TextGetSize""".split())
+TextSetFont TextGetSize MathSqrt MathCos MathExp MathFloor MathPow
+ArrayInitialize PeriodSeconds iTime CopyClose CopyHigh CopyLow ArrayCopy""".split())
 calls = set(re.findall(r'(\w+)\s*\(', s))
 unknown = sorted(c for c in calls if c not in set(fnames) and c not in kw and c not in b)
 chk("every call resolves", not unknown, str(unknown))
@@ -60,13 +61,20 @@ structs = {}
 for m in re.finditer(r'struct\s+(\w+)\s*\{(.*?)\};', s, re.S):
     structs[m.group(1)] = set(re.findall(r'^\s*(?:const\s+)?(?:string|int|double|long|ulong|bool|color|datetime|ENUM_\w+)\s+(\w+)', m.group(2), re.M))
 vs = {}
-for m in re.finditer(r'\b(SymbolFacts|AssetProfile|MarketState|SessionRec|MqlTick|MqlDateTime)\s+(\w+)', s):
+for m in re.finditer(r'\b(SymbolFacts|AssetProfile|MarketState|SessionRec|LaneState|MqlTick|MqlDateTime)\s+(\w+)', s):
     vs.setdefault(m.group(2), m.group(1))
 bad = [(v, f.group(1)) for v, t in vs.items() if t in structs
        for f in re.finditer(r'\b' + re.escape(v) + r'\.(\w+)', s) if f.group(1) not in structs[t]]
 chk("struct fields valid", not bad, str(sorted(set(bad))))
 
 chk("no input declarations", not re.search(r'^\s*input\s', s, re.M))
+
+# every #define must actually be used, or it is dead weight in a file
+# that claims each constant has a job
+defined = re.findall(r'^#define\s+(\w+)', src, re.M)
+# the #define line itself is one occurrence, so a live constant scores >= 2
+unused = sorted(d for d in defined if len(re.findall(r'\b' + d + r'\b', s)) < 2)
+chk("no unused #defines", not unused, str(unused))
 
 # dead code: a function defined but never called
 dead = [f for f in set(fnames) if f not in ('OnInit','OnDeinit','OnTick','OnTimer')

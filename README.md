@@ -1,95 +1,37 @@
-# Automate — stage 1: discovery and market status
+# Automate — stage 2: discovery, market status and the signal engine
 
-`Automate.mq5` is the first stage of the EA described in [automate.md](automate.md).
-It knows nothing about trading yet: **it reads the symbol, configures itself and reports the
-market state.** No signals, no orders, no positions, no diary.
+`Automate.mq5` is the EA described in [automate.md](automate.md), built in stages.
+**It still cannot trade.** No orders, no positions, no stops, no lot size, no diary — the
+panel says `SIGNAL ONLY` so this can never be mistaken for a trading build.
 
-**No inputs.** Attach it and it works out everything on its own.
+There are **no inputs**. Attach it and it works everything out on its own.
+
+| Stage | State | What it added |
+|---|---|---|
+| 1 | merged | symbol discovery, self-classification, self-configuration, market status, named sessions |
+| 2 | **this build** | per-lane TREND, AGE, REGIME, SCORE and SIGNAL on M5 / M15 / M30 |
+| 3 | not started | entries, stops, targets, lot size, execution, diary |
+
+Design decisions and the measurements behind them are recorded in
+[autotrade.md](autotrade.md).
 
 ## Install
 
 1. Copy `Automate.mq5` into `MQL5/Experts/`.
 2. Compile it in MetaEditor (F7).
 3. Attach it to any chart, on any timeframe.
-4. MT5's Algo Trading button is not needed for this stage — nothing is sent to the broker.
-
-## What it does
-
-**1. Discovery.** Reads the chart symbol exactly as the broker names it (suffix included),
-plus its description, folder path, base/profit currency, calculation mode, digits, point,
-tick size and tick value, volume min/max/step, stop and freeze levels, and the account
-currency and margin mode. Nothing is typed in, nothing is assumed.
-
-**2. Classification.** Decides whether the symbol is forex, metal, index, energy, crypto,
-stock, or other, using several independent hints that must agree:
-
-- the symbol name (`XAU`, `BTC`, `US500`, `WTI`, `EURUSD` …);
-- the broker's folder path (`Metals\`, `Indices\`, `Crypto\`, `Forex\` …);
-- the base/profit currencies;
-- the calculation mode;
-- the description and exchange sector/industry.
-
-The label is then cross-checked against the real price. If the evidence is weak, contested
-or contradicted by the price, the panel says `Other/Unknown` or `… (unconfirmed)` and uses
-the general profile. It never blocks, and it never silently pretends to be sure.
-
-**3. Self-configuration.** The class sets the starting parameters — stop buffer in ticks,
-spread gate multiple, warm-up bars. Entry, stop, target and lot size are *not* set here:
-those are derived from the symbol itself in a later stage, so gold and EURUSD need no
-separate settings.
-
-**4. Session awareness.** The EA measures the symbol's typical bar movement for each of the
-24 broker-server hours, using up to 10 days of M5 history, and compares the current hour
-with recent behaviour:
-
-| Current hour vs recent | Adjustment |
-|---|---|
-| below 60 % (thin) | +2 buffer ticks, spread gate × 1.25 |
-| 60–140 % (typical) | base profile |
-| above 140 % (fast) | spread gate × 1.10 |
-
-This is what makes the configuration genuinely time-of-day aware without asking you for a
-timezone.
-
-**5. Market status.** The broker's published session table is read per weekday, including
-multiple sessions and sessions that cross midnight. Each outcome gets its own honest name:
-
-| Shown | Meaning |
-|---|---|
-| `MARKET OPEN` | inside a published session, quote is fresh |
-| `MARKET CLOSED` | outside the table, with the next open time and countdown |
-| `OPEN - STALE QUOTE` | inside a session but no fresh quote |
-| `DISCONNECTED` | terminal is not connected |
-| `TRADING UNAVAILABLE` | the broker disabled the symbol |
-| `MARKET STATUS UNKNOWN` | no session table published and the quote is old |
-
-When closed, the panel says **MARKET CLOSED** and "Nothing to do while the market is
-closed". The discovery lines below stay visible on purpose: you need them to check the
-classification while the market is shut.
-
-**6. Named sessions.** Tokyo 09:00–18:00, London 08:00–17:00 and New York 08:00–17:00 in
-each city's local time, with the EU and US daylight-saving rules applied. This needs real
-UTC, so:
-
-- **live:** the server offset is derived and sanity-checked (15-minute grid, ±14 h) and the
-  label is marked `(est.)`;
-- **Strategy Tester:** real UTC cannot be known, so the line reads `Session: unknown` instead
-  of inventing a label. The broker's session table still decides open/closed normally.
+4. MT5's Algo Trading button is not needed — nothing is sent to the broker.
 
 ## The panel
-
-The panel is the interface sketch from `automate.md` section 7 and nothing else. Fields
-whose data does not exist yet are drawn as labels with blank values, so the shape is final
-and only the values fill in.
 
 ```text
  AUTOMATE    XAUUSDm  |  Metal  |  Hedging
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
- TF     TREND  REGIME   SCORE  SIGNAL  TRADE STATUS
- M5
- M15
- M30
+ TF     TREND  AGE    REGIME   SCORE  SIGNAL    TRADE STATUS
+ M5     UP     6/11   Steady   3/3    BUY       SIGNAL ONLY
+ M15    UP     2/11   Mixed    2/3    BUY       SIGNAL ONLY
+ M30    DOWN   14/11  Choppy   1/3    NO SIGNAL SIGNAL ONLY
 
  Selected:                    Entry:
  SL:                          TP:
@@ -99,94 +41,193 @@ and only the values fill in.
  Diary:                        Unknown future costs:
 ```
 
-Fourteen lines, one screen, no scrolling. When the market is not open, one extra line appears
-under row 2 with the close reason and the next open time:
+Columns are fixed at characters **1, 8, 15, 22, 31, 38 and 48**. The panel sizes itself to
+the text it actually draws; there are no X/Y/width/font inputs.
 
-```text
- MARKET CLOSED | Session: between sessions | Spread: 240.0 pts
- next open Mon 2026.11.02 01:05 server (in 2d 3h)
+## Reading the five columns
+
+### TREND — which way, and how strongly
+
+UP / DOWN / FLAT. Measured as the least-squares slope of the last 30 closed bars, divided
+by the median size of one bar. That division is why one internal constant works on gold at
+3 500 and EURUSD at 1.08 — the answer is always "how many ordinary bars per bar is this
+moving".
+
+`FLAT` is a real answer, not a missing one. On a driftless market the vote is FLAT roughly
+half the time, because on a random walk there usually is no trend to report.
+
+### AGE — how long the current trend has lasted
+
+Two numbers in bars: **this run / typical run**.
+
+| Cell | Meaning |
+|---|---|
+| `6/11` | 6 bars old; past trends on this lane usually lasted 11 — still young |
+| `14/11` | 14 bars old, past ones lasted 11 — overdue |
+| `1/-` | one bar old; no finished runs yet to compare against |
+
+The median is measured from that symbol's own history on that timeframe, so it adapts by
+itself. At attach the EA replays the vote over 400 already-closed bars to seed this, so the
+median is meaningful from the first second instead of after a day.
+
+This is the honest answer to *"how long will this last"*: how long it has lasted, against
+how long it usually does. There is **no** predicted bar number — see the limits below.
+
+### REGIME — what kind of market, on a like-for-like span
+
+`Steady` / `Mixed` / `Choppy`, from the standardised net move over **128 hours**:
+
+```
+z = (close now - close 128h ago) / (sd of bar changes x sqrt(bars in 128h))
+Steady if |z| >= 2.0    Mixed if |z| >= 1.0    Choppy otherwise
 ```
 
-Columns match the sketch exactly: the timeframe table starts at characters 1, 8, 15, 24, 31
-and 39; the two-column block puts its right column at character 30.
+`z` is `N(0,1)` for a driftless series at *any* window length, which is the only reason the
+three lanes can be compared: M5 reads 1 536 bars, M15 reads 512, M30 reads 256, all the
+same 128 hours. Measured, the three agree 94.5 % of the time on one series. Persistent
+disagreement on a live chart is a bug, not a market condition.
 
-**Blank by design:** the auto-trading flag, every trend / regime / score / signal column, the
-selected-plan block, exposure and the diary belong to later stages.
+**Regime never blocks a signal.** A valid BUY in Choppy is still shown as BUY.
 
-**Not on the panel:** the discovery dump, the self-configuration numbers and the broker
-session table are still measured and still checked - they are written to the **Experts** tab
-when the EA attaches and whenever the profile is rebuilt. The panel shows only the layout.
+### SCORE — agreement, never a probability
 
-### The session name
+Three independent measurements, each `+1 / 0 / -1`:
 
-The session is a statement, not an estimate. It is the broker's own server clock read against
-real UTC with the EU and US daylight-saving rules applied. The only place a name cannot be
-produced is the Strategy Tester, where MT5 sets `TimeGMT()` equal to the simulated server
-clock; there the row reads `Session: unknown`.
+| Vote | Measures |
+|---|---|
+| trend | regression slope over 30 bars |
+| momentum | 2-bar close change |
+| structure | 20-bar net move, withdrawn if swing lows are making lower lows |
 
-### Look and feel
+`3/3` … `0/3` is the size of the sum, so it says **how many of the three agree**, not how
+likely anything is. The votes are never multiplied: keeping them separate is what makes
+`2/3` a real, recurring state instead of a binary.
 
-- Same palette as SimpleEA: background `C'48,48,48'`, Consolas 10, white title, lime up,
-  tomato down, silver neutral; amber for HOLD reasons and red for alerts.
-- Row pitch is SimpleEA's `font size + 11` px, so both panels look identical at the same
-  font size. On a chart too short for that the pitch tightens automatically, never below the
-  measured text height plus two pixels.
-- The market state carries colour on its own row while the session and spread beside it stay
-  silver, so a red `MARKET CLOSED` does not turn the whole line red.
-- Width and height are measured from the text actually drawn, plus a 4 % margin so a line can
-  never lose its last characters against the panel edge. There are no panel inputs: no X/Y,
-  no width, no font size.
+`SIGNAL` is `BUY` at `>= 2`, `SELL` at `<= -2`, otherwise `NO SIGNAL`.
+
+### TRADE STATUS — two possible values
+
+| Value | Meaning |
+|---|---|
+| `SIGNAL ONLY` | the lane is working; **no order is placed** |
+| `DATA WAIT` | not enough closed bars on that timeframe yet |
+
+`ORDER PLACED` / `PENDING` / `BLOCKED` belong to stage 3, when something can actually be
+sent. Until then this column exists to say plainly that nothing is.
+
+## What it also does (carried over from stage 1)
+
+**Discovery.** Reads the symbol exactly as the broker names it, plus description, folder
+path, currencies, calc mode, digits, point, tick size and value, volume limits, stop and
+freeze levels, account currency and margin mode.
+
+**Classification.** Decides forex / metal / index / energy / crypto / stock / other from
+several independent hints that must agree — name, path, currencies, calc mode, description,
+sector. The label is cross-checked against the real price; when the evidence is weak the
+panel says `Other/Unknown` or `… (unconfirmed)` and uses the general profile.
+
+**Hour adjustment.** Measures typical bar movement for each of the 24 broker-server hours
+and compares the current hour with recent behaviour:
+
+| Current hour vs recent | Adjustment |
+|---|---|
+| below 60 % (thin) | +2 buffer ticks, spread gate × 1.25 |
+| 60–140 % (typical) | base profile |
+| above 140 % (fast) | spread gate × 1.10 |
+
+**Market status**, from the broker's own session table, read per weekday with multiple
+sessions and midnight crossings:
+
+| Shown | Meaning |
+|---|---|
+| `MARKET OPEN` | inside a published session, quote is fresh |
+| `MARKET CLOSED` | outside the table, with next open time and countdown |
+| `OPEN - STALE QUOTE` | inside a session but no fresh quote |
+| `DISCONNECTED` | terminal is not connected |
+| `TRADING UNAVAILABLE` | the broker disabled the symbol |
+| `MARKET STATUS UNKNOWN` | no session table published and the quote is old |
+
+**Named sessions.** Tokyo 09:00–18:00, London 08:00–17:00, New York 08:00–17:00 in local
+time with EU and US daylight-saving rules. In the Strategy Tester real UTC cannot be known,
+so the line reads `Session: unknown` rather than inventing a label.
+
+## Experts log
+
+The panel shows the layout; the numbers behind it go to the **Experts** tab:
+
+```
+Automate stage 2 - signal engine on XAUUSDm PERIOD_M5
+  description : Gold vs US Dollar
+  path        : Metals\XAUUSDm
+  ...
+  M5   trend UP 6/11, regime Steady 22/38, z=2.31, slope ratio 0.284,
+       votes 1 1 1, score 3, BUY
+  M30  trend DOWN 14/11, regime Choppy 5/38, z=-0.42, slope ratio -0.211,
+       votes -1 0 0, score -1, NO SIGNAL
+  Ehlers vs slope: 812 agree, 96 disagree (89.4% agree) over 908 closed bars
+```
+
+Printed at attach, hourly, and the moment a lane first comes alive.
 
 ## Before compiling
-
-A preflight script checks the file for the errors MetaEditor would report:
 
 ```bash
 python3 tools/preflight.py Automate.mq5
 ```
 
-It catches unbalanced braces, duplicate file-scope declarations, duplicate functions,
-unresolved calls, invalid struct fields, stray `input` lines and non-ASCII text. It does not
-replace MetaEditor - it only makes the cheap mistakes visible before you compile.
+Checks unbalanced braces and parentheses, duplicate file-scope declarations, duplicate
+functions, unresolved calls, argument counts, invalid struct fields, stray `input` lines,
+unused functions and non-ASCII text. It does not replace MetaEditor — it only makes the
+cheap mistakes visible before you compile.
 
 ## What to check while testing
 
 On the chart:
 
-- The class label in row 1 matches what the instrument really is.
-- `MARKET OPEN` / `MARKET CLOSED` agrees with the broker's own trading hours.
-- On a weekend or holiday, `MARKET CLOSED` appears with a sensible next open and countdown.
-- A 24-hour symbol (crypto) never shows closed.
-- `Session` names the right region for the current server hour.
-- In the Strategy Tester, `Session` reads `unknown` — that is correct, not a bug.
+- `TREND` on all three lanes is not permanently `FLAT`.
+- `AGE` shows a real median (`6/11`), not `1/-` forever. It should be populated at once.
+- `SCORE` shows values other than `3/3` — if every row is always `3/3`, two votes are
+  copies of each other and the score is meaningless.
+- `SIGNAL` shows `NO SIGNAL` reasonably often. A panel that always says BUY is broken.
+- `REGIME` agrees across M5 / M15 / M30 most of the time.
+- `TRADE STATUS` reads `SIGNAL ONLY` on all three lanes.
 
-In the **Experts** tab, where the discovery and self-configuration numbers are printed:
+In the **Experts** tab:
 
-- Description, path and calc mode match the broker's specification window.
-- The weekday list does not include Saturday/Sunday for a stock or index.
-- The spread baseline fills in after a few minutes (`typical x pts (n samples)`).
-- The adjustment line changes when the server hour changes.
+- Lanes report `DATA WAIT - history not loaded yet` on a symbol with shallow history,
+  rather than reading a regime from half a window.
+- The `Ehlers vs slope` agreement figure. **Near 50 % is expected and is the point** — that
+  number is the evidence that the bandpass does not track direction. Much higher reopens
+  the design decision.
 
 ## Limits, stated honestly
 
 - **No trading.** This build cannot place, modify or close anything.
-- The session table is the broker's. Holidays and one-off closures are not in it, so a
-  holiday can still read `MARKET OPEN` until the quote goes stale.
-- Named sessions are labels only. They never decide whether trading is allowed.
-- The clock used for session reasoning is the broker's own last tick time while a feed is
-  live, and the running server clock once the feed has stopped for more than five minutes —
-  otherwise a closed market would freeze the "next open in …" countdown.
-- The server's UTC offset is snapped to the nearest 15 minutes and rejected only if it is
-  more than two minutes off that grid, because the two clocks are never sampled at exactly
-  the same instant.
-- Classification is a scoring heuristic over broker metadata. Unusual names fall back to
-  `Other/Unknown` with the general profile, by design.
-- The hour profile is held in memory only; it needs about five distinct days of that hour
-  before it is used, and it starts over when the terminal restarts.
-- Spread baseline samples accumulate while the EA runs; nothing is written to disk.
+- **No predicted switch bar.** There is no reliable estimator of *when* a trend or regime
+  changes. First-passage time, OU half-life, Markov dwell and Ehlers cycle all return a
+  *duration*, never a date — and with no drift the expected first-passage time is literally
+  infinite. AGE is what was built instead, and it says so.
+- **No forward price projection.** The Kalman predict step would have given one; it was
+  dropped when the filter was. Nothing is claimed in its place.
+- **Direction has no measured edge.** `SimpleEA`'s own harness found pure direction is a
+  coin flip (48–52 % on liquid FX), and the same test reproduced that here: the Ehlers
+  bandpass scores 49.7–51.3 % against the next 20 bars. The score is an agreement count,
+  not a probability and not a performance claim.
+- **The Ehlers bandpass is still in the file but is not a vote.** Its sign is counted
+  against the trend vote and logged, so the claim above can be checked on your broker's
+  data instead of mine.
+- **AGE history is in memory only.** It is rebuilt by replay at every attach; nothing is
+  written to disk. Restarting the terminal restarts the learning.
+- **Minimum history per lane.** The terminal must hold **1 939** closed M5 bars, **915** M15
+  or **852** M30, because the 128-hour regime span and the 400-bar AGE replay must both fit.
+  A lane short of that reports `DATA WAIT` and keeps retrying.
+- The session table is the broker's, so a holiday can still read `MARKET OPEN` until the
+  quote goes stale.
+- Classification is a scoring heuristic over broker metadata; unusual names fall back to
+  `Other/Unknown` by design.
 
 ## Next stage (not in this build)
 
-The three lanes (M5 / M15 / M30), the Kalman signal, plan calculation, execution and the
-diary described in `automate.md` are deliberately absent. They come after this stage is
-verified on your broker.
+Entries, stops, targets, lot size, execution and the diary. When they arrive,
+`TRADE STATUS` gains `ORDER PLACED`, `PENDING` and `BLOCKED`, and `SIGNAL ONLY` remains only
+where auto-trading is switched off for a lane.
