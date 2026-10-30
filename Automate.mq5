@@ -42,7 +42,6 @@
 #define PANEL_PAD           10
 #define FONT_NAME           "Consolas"
 #define FONT_SIZE           10
-#define LINE_EXTRA          4
 #define LABEL_W             13
 #define MAX_SESSIONS        64
 #define SPREAD_SAMPLES      240
@@ -68,6 +67,8 @@
 #define MOVE_BAND_X         0.50    // move deadband = X * med * sqrt(horizon)
 #define MOVE_BAND_TICKS     1.00    // floor of the move deadband, in ticks
 #define AGE_HISTORY         200     // completed runs kept per state
+#define SEED_BARS           400     // closed bars replayed at attach so AGE
+                                    // has a median from the first second
 #define TREND_L1            150     // Ehlers bandpass long period, log only
 #define TREND_L2            24      // Ehlers bandpass short period, log only
 #define PI_D                3.14159265358979323846
@@ -1316,27 +1317,27 @@ bool LoadLane(ENUM_TIMEFRAMES tf, int count,
 //------------------------------------------------------------------
 //  Layer 1 - the size of an ordinary bar
 //------------------------------------------------------------------
-double MedianAbsChange(const double &close[], int n)
+//  end is the INDEX of the last closed bar to use, not a count.  That
+//  lets the same maths run over any point in the loaded history, which
+//  is what the AGE replay needs.
+double MedianAbsChange(const double &close[], int end)
 {
-   if(n < CHANGE_WINDOW + 1) return(0.0);
+   if(end < CHANGE_WINDOW) return(0.0);
    double ch[];
    ArrayResize(ch, CHANGE_WINDOW);
-   int base = n - CHANGE_WINDOW;
+   int base = end - CHANGE_WINDOW + 1;
    for(int i = 0; i < CHANGE_WINDOW; i++)
-   {
-      int k = base + i;
-      ch[i] = MathAbs(close[k] - close[k - 1]);
-   }
+      ch[i] = MathAbs(close[base + i] - close[base + i - 1]);
    return(MedianOfArray(ch));
 }
 
 //------------------------------------------------------------------
 //  Layer 2 - the trend vote
 //------------------------------------------------------------------
-double RegressionSlope(const double &close[], int n, int k)
+double RegressionSlope(const double &close[], int end, int k)
 {
-   if(k < 2 || n < k) return(0.0);
-   int base = n - k;
+   if(k < 2 || end < k - 1) return(0.0);
+   int base = end - k + 1;
    double mx = (k - 1) / 2.0;
 
    double my = 0.0;
@@ -1429,10 +1430,10 @@ int StructureVoteFrom(const double &close[], const double &high[],
 //  z = net move / (sd of bar changes * sqrt(span)).  For a driftless
 //  series z is N(0,1) at ANY span, which is exactly what the lanes
 //  need: the same threshold means the same thing on M5 and on M30.
-double DriftZ(const double &close[], int n, int span)
+double DriftZ(const double &close[], int end, int span)
 {
-   if(span < 20 || n < span + 1) return(0.0);
-   int base = n - span - 1;
+   if(span < 20 || end < span) return(0.0);
+   int base = end - span;
 
    double sum = 0.0;
    for(int i = 1; i <= span; i++)
@@ -1448,7 +1449,7 @@ double DriftZ(const double &close[], int n, int span)
    var /= (double)(span - 1);
    if(var <= 0.0) return(0.0);
 
-   double net = close[n - 1] - close[base];
+   double net = close[end] - close[base];
    return(net / (MathSqrt(var) * MathSqrt((double)span)));
 }
 
@@ -1509,6 +1510,28 @@ int RunMedian(int ch)
    return(tmp[cnt / 2]);
 }
 
+//  Replay the vote over closed bars that are already loaded, so the
+//  median exists at attach instead of after a day.  This is not
+//  look-ahead: every bar in the replay is finished, and the vote at
+//  that bar uses only the bars before it - exactly the number the EA
+//  would have printed had it been running.
+void SeedRuns(int idx, const double &close[], int n, int span, double tick)
+{
+   int start = n - 1 - SEED_BARS;
+   if(start < span) start = span;
+
+   //  The last index is left to the live path, which tracks it next.
+   for(int end = start; end < n - 1; end++)
+   {
+      double med = MedianAbsChange(close, end);
+      if(med <= 0.0) med = tick;
+
+      double ratio = RegressionSlope(close, end, TREND_PERIOD) / med;
+      TrackState(idx * 2, TrendVoteFrom(ratio));
+      TrackState(idx * 2 + 1, RegimeCodeOf(DriftZ(close, end, span)));
+   }
+}
+
 //------------------------------------------------------------------
 //  Ehlers Precision Trend - comparison log ONLY, never a vote
 //------------------------------------------------------------------
@@ -1565,28 +1588,33 @@ bool UpdateLane(int idx)
    if(need < TREND_L1 * 3) need = TREND_L1 * 3;
    if(need < g_p.warmupBars) need = g_p.warmupBars;
 
-   g_lane[idx].needBars = need;
+   //  Extra bars so the AGE replay has room behind the regime span.
+   int count = need + SEED_BARS;
+   g_lane[idx].needBars = count;
 
-   int have = Bars(_Symbol, tf);
-   g_lane[idx].haveBars = have;
-   if(have < need + 2) return(false);
+   //  Bars() is read for the message only.  Using it as the gate would
+   //  deadlock on a fresh terminal: it stays 0 until a series request is
+   //  made, and the request is the CopyClose below.
+   g_lane[idx].haveBars = Bars(_Symbol, tf);
 
    double close[], high[], low[];
-   if(!LoadLane(tf, need, close, high, low)) return(false);
+   if(!LoadLane(tf, count, close, high, low)) return(false);
+
+   int end = count - 1;                      // the most recent closed bar
 
    double tick = g_f.tickSize;
    if(tick <= 0.0) tick = g_f.point;
    if(tick <= 0.0) tick = 0.00001;
 
-   double med = MedianAbsChange(close, need);
+   double med = MedianAbsChange(close, end);
    if(med <= 0.0) med = tick;
 
-   double ratio = RegressionSlope(close, need, TREND_PERIOD) / med;
+   double ratio = RegressionSlope(close, end, TREND_PERIOD) / med;
    g_lane[idx].slopeRatio = ratio;
    g_lane[idx].trend      = TrendVoteFrom(ratio);
 
-   g_lane[idx].vMom = MomentumVoteFrom(close, need, med, tick);
-   g_lane[idx].vStr = StructureVoteFrom(close, high, low, need, med, tick);
+   g_lane[idx].vMom = MomentumVoteFrom(close, count, med, tick);
+   g_lane[idx].vStr = StructureVoteFrom(close, high, low, count, med, tick);
 
    g_lane[idx].score  = g_lane[idx].trend + g_lane[idx].vMom + g_lane[idx].vStr;
 
@@ -1595,12 +1623,20 @@ bool UpdateLane(int idx)
    if(g_lane[idx].score <= -2) sig = -1;
    g_lane[idx].signal = sig;
 
-   g_lane[idx].zValue = DriftZ(close, need, span);
+   g_lane[idx].zValue = DriftZ(close, end, span);
    g_lane[idx].regime = RegimeCodeOf(g_lane[idx].zValue);
 
-   g_lane[idx].ehSign = EhTrendSign(close, need);
-   if(g_lane[idx].ehSign == g_lane[idx].trend) g_ehAgree++;
-   else                                        g_ehDisagree++;
+   //  Only compare when BOTH have an opinion.  Counting "both flat" as
+   //  agreement would flatter the bandpass by every quiet bar.
+   g_lane[idx].ehSign = EhTrendSign(close, count);
+   if(g_lane[idx].ehSign != 0 && g_lane[idx].trend != 0)
+   {
+      if(g_lane[idx].ehSign == g_lane[idx].trend) g_ehAgree++;
+      else                                        g_ehDisagree++;
+   }
+
+   if(g_runPrev[idx * 2] == RUN_UNSET)
+      SeedRuns(idx, close, count, span, tick);
 
    TrackState(idx * 2,     g_lane[idx].trend);
    TrackState(idx * 2 + 1, g_lane[idx].regime);
@@ -1664,10 +1700,21 @@ string SignalText(int s)
    return("NO SIGNAL");
 }
 
+//  The AGE column is 7 characters wide.  "age/median" is shown when it
+//  fits; on a very long run the median is dropped rather than letting
+//  the text run into REGIME.
 string AgeText(int age, int med)
 {
-   if(med <= 0) return(IntegerToString(age) + "/-");
-   return(IntegerToString(age) + "/" + IntegerToString(med));
+   if(age < 0) age = 0;
+   string a = IntegerToString(age);
+   string m = (med <= 0 ? "-" : IntegerToString(med));
+
+   if(StringLen(a) + 1 + StringLen(m) <= 7)
+      return(a + "/" + m);
+
+   //  Too wide: the age is the number that matters.
+   if(StringLen(a) <= 7) return(a);
+   return("LONG");
 }
 
 //------------------------------------------------------------------
@@ -1676,16 +1723,30 @@ string AgeText(int age, int med)
 void LogLanes()
 {
    static datetime lastPrint = 0;
+   static int      lastReady = -1;
+
    datetime now = ServerNow();
-   if(lastPrint != 0 && now - lastPrint < 3600) return;
+
+   int ready = 0;
+   for(int r = 0; r < LANE_COUNT; r++) if(g_lane[r].ready) ready++;
+
+   //  Print hourly, and also the first time a lane comes alive - a wait
+   //  message must not hide the first real reading for an hour.
+   bool changed = (ready != lastReady);
+   if(!changed && lastPrint != 0 && now - lastPrint < 3600) return;
    lastPrint = now;
+   lastReady = ready;
 
    for(int i = 0; i < LANE_COUNT; i++)
    {
       if(!g_lane[i].ready)
       {
-         PrintFormat("%s DATA WAIT - %d of %d closed bars",
-                     g_lane[i].name, g_lane[i].haveBars, g_lane[i].needBars);
+         if(g_lane[i].haveBars <= 0)
+            PrintFormat("%s DATA WAIT - history not loaded yet, %d bars needed",
+                        g_lane[i].name, g_lane[i].needBars);
+         else
+            PrintFormat("%s DATA WAIT - %d of %d closed bars",
+                        g_lane[i].name, g_lane[i].haveBars, g_lane[i].needBars);
          continue;
       }
       PrintFormat("%s trend %s %d/%d, regime %s %d/%d, z=%.2f, slope ratio %.3f, votes %d %d %d, score %d, %s",

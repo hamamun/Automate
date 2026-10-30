@@ -69,6 +69,13 @@ chk("struct fields valid", not bad, str(sorted(set(bad))))
 
 chk("no input declarations", not re.search(r'^\s*input\s', s, re.M))
 
+# every #define must actually be used, or it is dead weight in a file
+# that claims each constant has a job
+defined = re.findall(r'^#define\s+(\w+)', src, re.M)
+# the #define line itself is one occurrence, so a live constant scores >= 2
+unused = sorted(d for d in defined if len(re.findall(r'\b' + d + r'\b', s)) < 2)
+chk("no unused #defines", not unused, str(unused))
+
 # dead code: a function defined but never called
 dead = [f for f in set(fnames) if f not in ('OnInit','OnDeinit','OnTick','OnTimer')
         and len(re.findall(r'\b' + re.escape(f) + r'\s*\(', s)) <= 1]

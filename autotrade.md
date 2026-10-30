@@ -281,6 +281,16 @@ enormous. "Bar 4" can be arithmetically correct and practically useless.
 - keep the last 200 completed run lengths for that lane and state
 - report the current age and the median completed run
 
+**Seeded, not learned from zero.** Measuring found that a cold start leaves the median
+empty for 538 bars - 45 hours on M5 and **11 days on M30** - which makes the column useless
+for its first week. So at attach each lane replays the vote over 400 already-closed bars it
+has loaded. This is not look-ahead: every bar in the replay is finished, and the vote at
+bar *i* uses only bars before *i*, so the replay produces exactly the numbers the EA would
+have printed had it been running. Verified against ground truth - a 400-bar replay gives
+the same age and the same median as an EA that had tracked every bar from the start.
+
+Cost is one pass per lane at attach: about 1 M operations in total, once.
+
 Panel cell: `6/11` = this state is 6 bars old, the median completed run was 11.
 
 This answers the user's question — *how long will it last, how unusual is this* — from the
