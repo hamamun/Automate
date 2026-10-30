@@ -9,7 +9,7 @@ There are **no inputs**. Attach it and it works everything out on its own.
 | Stage | State | What it added |
 |---|---|---|
 | 1 | merged | symbol discovery, self-classification, self-configuration, market status, named sessions |
-| 2 | **this build** | per-lane TREND, AGE, REGIME, SCORE and SIGNAL on M5 / M15 / M30 |
+| 2 | **this build** | per-lane TREND, REGIME, SCORE and SIGNAL on M5 / M15 / M30, with a measured forward horizon on trend and regime |
 | 3 | not started | entries, stops, targets, lot size, execution, diary |
 
 Design decisions and the measurements behind them are recorded in
@@ -28,10 +28,10 @@ Design decisions and the measurements behind them are recorded in
  AUTOMATE    XAUUSDm  |  Metal  |  Hedging
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
- TF     TREND  AGE    REGIME   SCORE  SIGNAL    TRADE STATUS
- M5     UP     6/11   Steady   3/3    BUY       SIGNAL ONLY
- M15    UP     2/11   Mixed    2/3    BUY       SIGNAL ONLY
- M30    DOWN   14/11  Choppy   1/3    NO SIGNAL SIGNAL ONLY
+ TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
+ M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
  Selected:                    Entry:
  SL:                          TP:
@@ -41,50 +41,61 @@ Design decisions and the measurements behind them are recorded in
  Diary:                        Unknown future costs:
 ```
 
-Columns are fixed at characters **1, 8, 15, 22, 31, 38 and 48**. The panel sizes itself to
+Columns are fixed at characters **1, 8, 22, 38, 45 and 55**. The panel sizes itself to
 the text it actually draws; there are no X/Y/width/font inputs.
 
 ## Reading the five columns
 
-### TREND — which way, and how strongly
+### TREND — which way, and how much longer
 
-UP / DOWN / FLAT. Measured as the least-squares slope of the last 30 closed bars, divided
-by the median size of one bar. That division is why one internal constant works on gold at
-3 500 and EURUSD at 1.08 — the answer is always "how many ordinary bars per bar is this
-moving".
+`UP 6/30%L` reads three things:
 
-`FLAT` is a real answer, not a missing one. On a driftless market the vote is FLAT roughly
-half the time, because on a random walk there usually is no trend to report.
-
-### AGE — how long the current trend has lasted
-
-Two numbers in bars: **this run / typical run**.
-
-| Cell | Meaning |
+| Part | Means |
 |---|---|
-| `6/11` | 6 bars old; past trends on this lane usually lasted 11 — still young |
-| `14/11` | 14 bars old, past ones lasted 11 — overdue |
-| `1/-` | one bar old; no finished runs yet to compare against |
+| `UP` | the trend is up right now |
+| `6` | about **6 more closed bars** from the last one — the forward horizon |
+| `30%` | 30 % of the trend's whole life is still ahead |
+| `L` | left — applies to both numbers above |
 
-The median is measured from that symbol's own history on that timeframe, so it adapts by
-itself. At attach the EA replays the vote over 400 already-closed bars to seed this, so the
-median is meaningful from the first second instead of after a day.
+The two numbers are one estimate told twice. 6 bars left at 30 % means the trend's
+whole life is about 20 bars, so it is already 14 bars old. They can never disagree.
 
-This is the honest answer to *"how long will this last"*: how long it has lasted, against
-how long it usually does. There is **no** predicted bar number — see the limits below.
+**How it is measured.** The EA stores the length of every completed trend on that lane
+— up to 200 of them — and asks a specific question:
 
-### REGIME — what kind of market, on a like-for-like span
+> Of the past trends that already reached this age, how much longer did they run?
 
-`Steady` / `Mixed` / `Choppy`, from the standardised net move over **128 hours**:
+The median of those survivors is the bar count. That is why it changes as a trend ages:
+a 2-bar-old trend and a 40-bar-old trend have different histories behind them.
+
+**When there is no number.** Two different reasons, told apart on the panel:
+
+| Cell | Means |
+|---|---|
+| `UP Max` | this trend has already run longer than any trend on record — there is nothing honest to predict |
+| `UP` | too few past trends got this far yet — usually the first hours after attaching |
+
+Both explain themselves on hover. `Max` is the interesting one: it means you are in
+unusual territory, not that the EA is still warming up.
+
+**Merged from AGE.** An older build had a separate AGE column showing `14/11`
+(age / typical length). It was removed: the surviving-run figure above already contains
+the age, so the AGE column was showing the same thing twice.
+
+### REGIME — what kind of market, and how much longer
+
+`Steady 12/45%L` — same two forward numbers, measured on regime runs instead of trend
+runs. `Steady` / `Mixed` / `Choppy` come from the standardised net move over **128
+hours**:
 
 ```
 z = (close now - close 128h ago) / (sd of bar changes x sqrt(bars in 128h))
 Steady if |z| >= 2.0    Mixed if |z| >= 1.0    Choppy otherwise
 ```
 
-`z` is `N(0,1)` for a driftless series at *any* window length, which is the only reason the
-three lanes can be compared: M5 reads 1 536 bars, M15 reads 512, M30 reads 256, all the
-same 128 hours. Measured, the three agree 94.5 % of the time on one series. Persistent
+`z` is `N(0,1)` for a driftless series at *any* window length, which is the only reason
+the three lanes can be compared: M5 reads 1 536 bars, M15 512, M30 256 — all the same
+128 hours. Measured, the three agree 94.5 % of the time on one series. Persistent
 disagreement on a live chart is a bug, not a market condition.
 
 **Regime never blocks a signal.** A valid BUY in Choppy is still shown as BUY.
@@ -160,10 +171,10 @@ Automate stage 2 - signal engine on XAUUSDm PERIOD_M5
   description : Gold vs US Dollar
   path        : Metals\XAUUSDm
   ...
-  M5   trend UP 6/11, regime Steady 22/38, z=2.31, slope ratio 0.284,
-       votes 1 1 1, score 3, BUY
-  M30  trend DOWN 14/11, regime Choppy 5/38, z=-0.42, slope ratio -0.211,
-       votes -1 0 0, score -1, NO SIGNAL
+  M5   trend UP 6 bars left (30%), age 14 | regime Steady 12 bars left (45%),
+       age 22 | z=2.31 slope 0.284 | votes 1 1 1 score 3 BUY
+  M30  trend DOWN 21 bars left (35%), age 39 | regime Choppy 3 bars left (12%),
+       age 28 | z=-0.42 slope -0.211 | votes -1 0 0 score -1 NO SIGNAL
   Ehlers vs slope: 812 agree, 96 disagree (89.4% agree) over 908 closed bars
 ```
 
@@ -185,7 +196,9 @@ cheap mistakes visible before you compile.
 On the chart:
 
 - `TREND` on all three lanes is not permanently `FLAT`.
-- `AGE` shows a real median (`6/11`), not `1/-` forever. It should be populated at once.
+- `TREND` and `REGIME` show a forward number (`UP 6/30%L`), not a bare label. A bare label
+  for hours means the run history did not seed at attach; `UP Max` is a real reading.
+- Hovering a TREND or REGIME cell shows the plain-language explanation.
 - `SCORE` shows values other than `3/3` — if every row is always `3/3`, two votes are
   copies of each other and the score is meaningless.
 - `SIGNAL` shows `NO SIGNAL` reasonably often. A panel that always says BUY is broken.
@@ -203,10 +216,18 @@ In the **Experts** tab:
 ## Limits, stated honestly
 
 - **No trading.** This build cannot place, modify or close anything.
-- **No predicted switch bar.** There is no reliable estimator of *when* a trend or regime
-  changes. First-passage time, OU half-life, Markov dwell and Ehlers cycle all return a
-  *duration*, never a date — and with no drift the expected first-passage time is literally
-  infinite. AGE is what was built instead, and it says so.
+- **No predicted switch bar.** `6/30%L` is a median remaining length from that lane's own
+  history, never a date. First-passage time, OU half-life, Markov dwell and Ehlers cycle all
+  return a *duration*, never a date — and with no drift the expected first-passage time is
+  literally infinite.
+- **The percent sits high for most of a run.** Measured over 26 728 bars: median 55 % left,
+  only 4.9 % of bars below 20 %. It is a warning light near the end, not a countdown.
+- **The answer is wide, not tight.** Run lengths are heavy-tailed, so the cell shows one
+  number but the hover gives the interquartile range - often something like "18 to 96 more".
+- **Some bars carry no number.** Coverage grows as history builds: about 70 % of bars in the
+  first ~2 000, 85–92 % after that, and effectively 100 % once the 400-run history is full.
+  A bare `UP` means not enough past runs got this far; `UP Max` means the run is longer than
+  anything on record.
 - **No forward price projection.** The Kalman predict step would have given one; it was
   dropped when the filter was. Nothing is claimed in its place.
 - **Direction has no measured edge.** `SimpleEA`'s own harness found pure direction is a
@@ -216,11 +237,12 @@ In the **Experts** tab:
 - **The Ehlers bandpass is still in the file but is not a vote.** Its sign is counted
   against the trend vote and logged, so the claim above can be checked on your broker's
   data instead of mine.
-- **AGE history is in memory only.** It is rebuilt by replay at every attach; nothing is
-  written to disk. Restarting the terminal restarts the learning.
-- **Minimum history per lane.** The terminal must hold **1 939** closed M5 bars, **915** M15
-  or **852** M30, because the 128-hour regime span and the 400-bar AGE replay must both fit.
-  A lane short of that reports `DATA WAIT` and keeps retrying.
+- **Run history is in memory only.** It is rebuilt by replaying 800 closed bars at every
+  attach, so the panel is populated immediately, but nothing is written to disk. The last
+  400 completed runs per lane are kept; older ones are dropped.
+- **Minimum history per lane.** The terminal must hold **2 339** closed M5 bars, **1 315** M15
+  or **1 252** M30, because the 128-hour regime span and the 800-bar history replay must both
+  fit. A lane short of that reports `DATA WAIT` and keeps retrying.
 - The session table is the broker's, so a holiday can still read `MARKET OPEN` until the
   quote goes stale.
 - Classification is a scoring heuristic over broker metadata; unusual names fall back to
