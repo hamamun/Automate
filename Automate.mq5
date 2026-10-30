@@ -2112,16 +2112,32 @@ string TwoCol(string left, string right)
    return(" " + Pad(left, COL_RIGHT - 1) + right);
 }
 
-//  The timeframe table header: TF, TREND, AGE, REGIME, SCORE, SIGNAL,
-//  TRADE STATUS at columns 1, 8, 15, 22, 31, 38 and 48.  SIGNAL is 10
-//  wide because NO SIGNAL is 9 characters and needs one separating
-//  space before TRADE STATUS.
-string TableRow(string tf, string trend, string regime,
-                string score, string signal, string status)
+//  The timeframe table header.  Drawn as six separate cells on exactly
+//  the same grid as the lane rows below it, not as one long string.
+//
+//  Why this matters: a label's glyph advance is a little narrower than
+//  the width TextWidth() assumes, so a single-string header and a
+//  cell-by-cell row drift apart - by the last column the header sat
+//  about 46 px left of the data.  Plus the header is the longest line
+//  on the panel, so a single label was also the first thing to run out
+//  of room at the right edge.  Both go away when the header walks the
+//  same cell grid as everything else.
+void HeaderRow()
 {
-   return(" " + Pad(tf, 7) + Pad(trend, LANE_TREND_W) +
-          Pad(regime, LANE_REGIME_W) + Pad(score, LANE_SCORE_W) +
-          Pad(signal, LANE_SIGNAL_W) + status);
+   string segT[6];
+   color  segC[6];
+   string segP[6];
+
+   segT[0] = " " + Pad("TF", 7);              segC[0] = CLR_SECTION;
+   segT[1] = Pad("TREND", LANE_TREND_W);      segC[1] = CLR_SECTION;
+   segT[2] = Pad("REGIME", LANE_REGIME_W);    segC[2] = CLR_SECTION;
+   segT[3] = Pad("SCORE", LANE_SCORE_W);      segC[3] = CLR_SECTION;
+   segT[4] = Pad("SIGNAL", LANE_SIGNAL_W);    segC[4] = CLR_SECTION;
+   segT[5] = "TRADE STATUS";                  segC[5] = CLR_SECTION;
+
+   for(int i = 0; i < 6; i++) segP[i] = "";
+
+   AddSegLineTip(segT, segC, segP);
 }
 
 int LaneBars(ENUM_TIMEFRAMES tf)
@@ -2187,8 +2203,7 @@ void BuildPanel()
    //  engine.  A lane whose history is too shallow says DATA WAIT
    //  rather than reading a regime from half a window.
    // ---------------------------------------------------------------
-   AddLine(TableRow("TF", "TREND", "REGIME", "SCORE", "SIGNAL",
-                    "TRADE STATUS"), CLR_SECTION);
+   HeaderRow();
    for(int i = 0; i < LANE_COUNT; i++) LaneRow(i);
    AddLine("", CLR_TEXT);
 
