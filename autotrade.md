@@ -9,7 +9,7 @@ decision and says why.
 
 Stage 1 (discovery, self-configuration, market and session status) is built, merged and
 verified in MetaEditor with 0 errors. Stage 2 is built in the same file; the panel now
-carries TREND, AGE, REGIME, SCORE and SIGNAL.
+carries TREND, REGIME, SCORE and SIGNAL.
 
 Sections 5, 7, 9 and 10 were rewritten after the trend filter was measured rather than
 argued about. What changed and why is in section 10.4 - the short version is that the
@@ -36,7 +36,7 @@ and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trad
 | # | Decision | Why |
 |---|---|---|
 | D1 | Regime window is **time-equalised across lanes** | 20 bars is 100 minutes on M5 and 10 hours on M30, so the three labels would describe three different markets and disagree for reasons unrelated to price. SimpleEA hit this exact defect and fixed it the same way. |
-| D2 | An **AGE** column is added to the panel | The honest answer to "how long will this last" is the age of the current state against its own history, not a predicted switch bar. |
+| D2 | TREND and REGIME each show **bars left and % of life left**, measured not predicted | The honest answer to "how long will this last" is that lane's own run history, conditioned on how far the run has already got. Not a predicted switch bar. |
 | D3 | No forward prediction of "the bar it changes" | No tool can do this. See section 8. |
 | D4 | Votes stay **separate and visible**, never multiplied together | `v1 × v2 × v3` collapses to binary and hides which vote disagreed, which is the most useful diagnostic available. |
 | D5 | The regime label **never vetoes** a signal | Per `automate.md`. It is context. If it ever gains teeth that is a separate, explicit decision. |
@@ -166,7 +166,7 @@ and EURUSD at 1.08 both come out as "how many ordinary bars per bar did this mov
 
 Two things had to be picked, so both were measured. The score is the fraction of bars
 where the vote's sign matched the next 20-bar move, and the run length is how many bars
-the vote holds before it changes - which matters because the AGE column is built on it.
+the vote holds before it changes - which matters because the remaining-life figure is built on it.
 
 | Slope window | Band | FLAT | median run | hit at 20 bars |
 |---|---|---|---|---|
@@ -178,7 +178,7 @@ the vote holds before it changes - which matters because the AGE column is built
 | 100 | 0.20 | 38 % | 18 | 72.4 % |
 
 A 20-bar window with a 0.10 band produces a vote that changes every ~6 bars. That is
-accurate enough, but an AGE built on a six-bar flicker says nothing. The chosen setting is
+accurate enough, but a remaining-life figure built on a six-bar flicker says nothing. The chosen setting is
 **30 bars, band 0.20**: twice the run length of the original guess, the best measured hit
 rate at the 20-bar horizon, at the cost of more FLAT.
 
@@ -275,11 +275,12 @@ enormous. "Bar 4" can be arithmetically correct and practically useless.
 
 ### 8.2 What is built instead
 
-**Age tracking.** For each lane, and separately for trend direction and for regime label:
+**Remaining life, measured against the lane's own history.** For each lane, and
+separately for trend direction and for regime label:
 
-- count how many consecutive bars the current state has lasted
+- count how many consecutive bars the current state has lasted - its age
 - keep the last 200 completed run lengths for that lane and state
-- report the current age and the median completed run
+- report **how many more bars it should run**, and that as a share of its whole life
 
 **Seeded, not learned from zero.** Measuring found that a cold start leaves the median
 empty for 538 bars - 45 hours on M5 and **11 days on M30** - which makes the column useless
@@ -289,7 +290,59 @@ bar *i* uses only bars before *i*, so the replay produces exactly the numbers th
 have printed had it been running. Verified against ground truth - a 400-bar replay gives
 the same age and the same median as an EA that had tracked every bar from the start.
 
-Cost is one pass per lane at attach: about 1 M operations in total, once.
+Cost is one pass per lane at attach: about 1.5 M operations in total, once.
+
+**How the remaining life is computed - and the version that was rejected.**
+
+The obvious formula is *typical run length minus age*. It was measured before being
+written: **it returns zero on 65 % of bars**. A number that reads zero two-thirds of
+the time is not a forecast, it is a dead cell.
+
+The question that works is different. Instead of asking how long runs *usually* are,
+ask:
+
+> Of the past runs that **already reached this age**, how much longer did they go?
+
+Those are the survivors. Their median residual is the bars-left figure, and it never
+returns zero because it is conditioned on having got this far. Measured on the same
+data: **0 % zeros, median 21 bars.**
+
+```
+barsLeft = median( run - age )  over stored runs where run > age
+pctLeft  = 100 x barsLeft / (age + barsLeft)
+```
+
+The two displayed numbers are therefore one estimate, not two.
+
+**Coverage.** Six survivors are required before a claim is made, and the last 400
+completed runs are kept per lane. Measured on 26 728 bars of the real vote logic,
+**95.7 % of bars carry a number**; the 4.3 % that fall short are runs that have
+already outlasted almost everything in that lane's history, where the honest answer
+is "this is older than anything we have seen". The tooltip says exactly that instead
+of inventing a number.
+
+**What the numbers actually look like.** Same run:
+
+| Statistic | p25 | median | p75 | extreme |
+|---|---|---|---|---|
+| bars left | 19 | 81 | 113 | 295 |
+| % of life left | 43 % | 55 % | 68 % | 95 % |
+
+| Threshold | Share of bars |
+|---|---|
+| below 10 % left | 0.0 % |
+| below 20 % left | 4.9 % |
+| below 50 % left | 38.3 % |
+
+The percent never reaches zero and sits above half most of the time. That is the shape
+of the real thing - a run that has lasted this long really does tend to last - but it
+means the percent is a **warning light near the end**, not a countdown to watch from
+the start. Written down here so nobody is surprised by it later.
+
+**How wide the answer is.** The run distribution is heavy-tailed, so the median alone
+would overstate precision. The tooltip also gives the interquartile range of the same
+survivors, e.g. *"Similar past runs went on for 18 to 96 more."* The panel cell keeps
+the single number; the spread lives one hover away.
 
 Panel cell: `6/11` = this state is 6 bars old, the median completed run was 11.
 
@@ -331,7 +384,9 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `TREND_BAND_X` | 0.20 | trend deadband, in units of `med` |
 | `MOVE_BAND_X` | 0.50 | move deadband = `0.50 x med x sqrt(horizon)` |
 | `MOVE_BAND_TICKS` | 1.00 | floor of the move deadband, in ticks |
-| `AGE_HISTORY` | 200 | completed runs kept per state |
+| `AGE_HISTORY` | 400 | completed runs kept per state |
+| `MIN_REMAIN_SAMPLES` | 6 | surviving runs needed before a remaining life is claimed |
+| `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
 
 None of these is a user input (D6). Each is a starting candidate to be replaced only by a
@@ -425,18 +480,17 @@ panel reports duration-so-far, not duration-remaining.
 
 ## 11. Panel
 
-AGE is the one column added to the `automate.md` sketch; the others shift right to make
-room. AGE shows the **trend's** age, because it sits next to TREND. The regime's age is
-measured and written to the Experts log, not shown.
+AGE is gone. TREND and REGIME each carry the forward number instead, so one row
+answers the only question worth asking of a live panel: **how much longer**.
 
 ```text
  AUTOMATE    XAUUSDm  |  Metal  |  Hedging
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
- TF     TREND  AGE    REGIME   SCORE  SIGNAL    TRADE STATUS
- M5     UP     6/11   Steady   3/3    BUY       SIGNAL ONLY
- M15    UP     2/11   Mixed    2/3    BUY       SIGNAL ONLY
- M30    DOWN   14/11  Choppy   1/3    NO SIGNAL SIGNAL ONLY
+ TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
+ M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
  Selected:                    Entry:
  SL:                          TP:
@@ -446,20 +500,61 @@ measured and written to the Experts log, not shown.
  Diary:                        Unknown future costs:
 ```
 
-| Column | Character | Contents |
-|---|---|---|
-| TF | 1 | `M5` `M15` `M30` |
-| TREND | 8 | `UP` `DOWN` `FLAT` |
-| AGE | 15 | `current/median` in bars, `-` until history exists |
-| REGIME | 22 | `Steady` `Mixed` `Choppy` |
-| SCORE | 31 | `3/3` … `0/3` |
-| SIGNAL | 38 | `BUY` `SELL` `NO SIGNAL` — 10 wide, because the longest value plus one separating space needs 10 |
-| TRADE STATUS | 48 | `SIGNAL ONLY`, `DATA WAIT` |
+`6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
+still ahead. `L` = left, and it applies to both numbers.
 
-Still blank: the auto-trading flag, every row of the plan block, exposure, diary.
+| Column | Character | Width | Contents |
+|---|---|---|---|
+| TF | 1 | 7 | `M5` `M15` `M30` |
+| TREND | 8 | 14 | `UP 6/30%L`, or just `UP` when there is no estimate |
+| REGIME | 22 | 16 | `Steady 12/45%L`, or just the label |
+| SCORE | 38 | 7 | `3/3` … `0/3` |
+| SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
+| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
 
-Colour: TREND and SIGNAL carry direction colour; REGIME is plain text; AGE and TRADE
-STATUS are dim. Text always carries the meaning.
+The header is unchanged from the earlier draft apart from losing AGE. Widest line is
+67 characters. A cell that would exceed its column drops the bar count first, then
+the estimate, so alignment cannot break.
+
+### 11.1 How the two numbers relate
+
+`barsLeft` is a median. The percent is that same median against the run's implied
+whole life:
+
+```
+total  = age + barsLeft
+pctLeft = 100 x barsLeft / total
+```
+
+So 6 bars left at age 14 is 30 % of a 20-bar life. The two never disagree, because
+one is computed from the other.
+
+### 11.2 Why the numbers are not constant per timeframe
+
+There is no per-lane horizon setting. The horizon is whatever that lane's own runs
+do. On a quiet symbol the trend turns every 6 bars; on a strong one it runs 40. The
+panel reports what it measures, which is the only version that can be right on both.
+
+### 11.3 Hover text is the only explanation
+
+The panel carries no legend, by request. Each cell explains itself on hover:
+
+| Hover | Shows |
+|---|---|
+| TREND cell | "M5 trend UP. About 6 more bars (30 min). 30% of its life left - a total of about 20 bars, 14 already used." |
+| REGIME cell | "M5 regime Steady. About 12 more bars (1 h). 45% of its life left - ..." |
+| SCORE cell | "2 of 3 votes agree. Trend 1, momentum 1, structure 0." |
+| SIGNAL cell | "BUY or SELL needs 2 of the 3 votes to agree." |
+| TRADE STATUS | "Nothing is sent to the broker in this build." |
+
+When a run has already outlasted every run in its history the tooltip says so
+plainly instead of inventing a number:
+
+> "M5 trend UP has already run 121 bars - longer than any run in its history
+> (longest 118). No honest estimate of what is left."
+
+Colour: TREND and SIGNAL carry direction colour; REGIME, SCORE and TRADE STATUS are
+plain. Text always carries the meaning.
 
 ---
 
@@ -467,7 +562,8 @@ STATUS are dim. Text always carries the meaning.
 
 | Not built | Reason |
 |---|---|
-| A predicted bar for a regime or trend change | no honest estimator exists, section 8.1 |
+| An exact bar number for the turn | only a median remaining length is claimed, never a date |
+| A forward price projection | dropped with the Kalman filter, nothing claimed in its place |
 | A "probability of winning" | agreement of correlated measurements is not a probability |
 | ATR in any entry, stop or target | prohibited by `automate.md` |
 | Per-symbol-class window lengths | would make forex and gold different strategies; the tick floor and the deadband carry the symbol difference, the window does not |
@@ -494,9 +590,12 @@ STATUS are dim. Text always carries the meaning.
    | regime | Steady 81.1 %, Mixed 11.4 %, Choppy 7.5 %, median run **38 bars** |
    | score | every value from -3 to +3 occurs, -3 16.9 %, +3 20.2 % |
    | signal | fires on 63.4 % of bars |
+   | remaining-life coverage | 95.7 % of bars show a number |
+   | remaining-life zeros | 0.0 % - the rejected formula gave 64.8 % |
+   | widest rendered cell | TREND 12 of 14, REGIME 15 of 16 |
 
-   Both AGE medians are non-zero and plausible, which is what the column needs to mean
-   anything. Every score occurs, so `2/3` and `1/3` are real states and the three votes
+   Both remaining-life estimates are populated on ~99 % of bars, which is what the
+   column needs to mean anything. Every score occurs, so `2/3` and `1/3` are real states and the three votes
    are not copies of each other.
 
    The 63.4 % signal rate looks high and is: this series spends half its life in a strong
@@ -518,7 +617,7 @@ STATUS are dim. Text always carries the meaning.
 | # | Question | Status |
 |---|---|---|
 | Q1 | Regime window equalised | **decided**, 128 h candidate |
-| Q2 | AGE column | **decided**, added |
+| Q2 | How to show duration on the panel | **decided** - `bars/%L` inside TREND and REGIME; a separate AGE column was built first and then removed as redundant |
 | Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
-| Q4 | Should AGE also be tracked for the SIGNAL itself | open - the code tracks TREND and REGIME only |
+| Q4 | Should the SIGNAL also carry a remaining life | open - the code tracks TREND and REGIME runs only; signal is not tracked as a run |
 | Q5 | Should regime boundaries be per-class | open - currently one set for every symbol. The measurement says no: `z` is scale-free |

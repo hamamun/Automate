@@ -66,8 +66,10 @@
 #define TREND_BAND_X        0.20    // trend deadband, in units of a typical bar
 #define MOVE_BAND_X         0.50    // move deadband = X * med * sqrt(horizon)
 #define MOVE_BAND_TICKS     1.00    // floor of the move deadband, in ticks
-#define AGE_HISTORY         200     // completed runs kept per state
-#define SEED_BARS           400     // closed bars replayed at attach so AGE
+#define AGE_HISTORY         400     // completed runs kept per state
+#define MIN_REMAIN_SAMPLES  6       // runs that outlived this age needed
+                                    // before a remaining life is claimed
+#define SEED_BARS           800     // closed bars replayed at attach so AGE
                                     // has a median from the first second
 #define TREND_L1            150     // Ehlers bandpass long period, log only
 #define TREND_L2            24      // Ehlers bandpass short period, log only
@@ -196,9 +198,17 @@ struct LaneState
    int      score;       // trend + momentum + structure, -3 .. +3
    int      signal;      // -1 SELL / 0 none / +1 BUY
    int      trendAge;
-   int      trendMed;
    int      regimeAge;
-   int      regimeMed;
+   int      trendLeft;      // bars left, median of runs that outlived the age
+   int      trendLeftPct;   // that as a share of the run's whole life
+   int      trendLo;        // lower quartile of those residuals
+   int      trendHi;        // upper quartile
+   int      regimeLeft;
+   int      regimeLeftPct;
+   int      regimeLo;
+   int      regimeHi;
+   bool     trendLeftOk;    // false = not enough survived runs to say
+   bool     regimeLeftOk;
    int      ehSign;      // Ehlers bandpass sign, comparison log only
 };
 
@@ -216,6 +226,7 @@ int    g_lineSegFrom[];// first segment index of a coloured line, -1 = plain
 int    g_lineSegN[];   // how many segments that line has
 string g_segText[];    // segment text, concatenated into g_line[]
 color  g_segClr[];     // segment colour
+string g_segTip[];     // hover text for that segment, "" = none
 int    g_drawn = 0;    // labels currently on the chart
 
 SessionRec g_sess[MAX_SESSIONS];
@@ -1498,16 +1509,108 @@ void TrackState(int ch, int state)
    g_runNow[ch]  = 1;
 }
 
-int RunMedian(int ch)
+//  How much longer should this state run?
+//
+//  Not "typical length minus age" - measured on synthetic data that
+//  reads zero on 65% of bars and tells you nothing.  The question asked
+//  here is the right one: of the past runs that ALREADY REACHED this
+//  age, how much longer did they go?  That never returns zero, and it
+//  tightens as the run ages, which is the whole point.
+//
+//  barsLeft is the median of those survivors.  pctLeft is that same
+//  median against the run's implied whole life (age + barsLeft), so
+//  6 bars left at age 14 is 30% of a 20-bar life - the two numbers
+//  always agree with each other.
+bool RemainingRun(int ch, int age, int &barsLeft, int &pctLeft,
+                   int &loLeft, int &hiLeft)
+{
+   barsLeft = 0;
+   pctLeft  = 0;
+   loLeft   = 0;
+   hiLeft   = 0;
+
+   int cnt = g_runCount[ch];
+   if(cnt < MIN_REMAIN_SAMPLES) return(false);
+
+   int base = ch * AGE_HISTORY;
+   int res[];
+   int n = 0;
+   for(int i = 0; i < cnt; i++)
+   {
+      int r = g_runHist[base + i] - age;
+      if(r <= 0) continue;                 // that run did not outlive this age
+      ArrayResize(res, n + 1);
+      res[n] = r;
+      n++;
+   }
+   if(n < MIN_REMAIN_SAMPLES) return(false);   // too few survivors to claim anything
+
+   ArraySort(res);
+   int med = res[n / 2];
+   if(med < 1) med = 1;
+
+   //  The spread is reported alongside the median, because a median of a
+   //  heavy-tailed run distribution hides how wide the answer really is.
+   loLeft = res[n / 4];
+   hiLeft = res[(3 * n) / 4];
+   if(loLeft < 1) loLeft = 1;
+   if(hiLeft < loLeft) hiLeft = loLeft;
+
+   int total = age + med;
+   int pct   = (total > 0 ? (int)MathRound(100.0 * (double)med / (double)total) : 0);
+   if(pct < 1)  pct = 1;
+   if(pct > 99) pct = 99;
+
+   barsLeft = med;
+   pctLeft  = pct;
+   return(true);
+}
+
+//  Longest completed run this channel has seen, 0 if none.
+int MaxRun(int ch)
 {
    int cnt = g_runCount[ch];
    if(cnt <= 0) return(0);
    int base = ch * AGE_HISTORY;
-   int tmp[];
-   ArrayResize(tmp, cnt);
-   for(int i = 0; i < cnt; i++) tmp[i] = g_runHist[base + i];
-   ArraySort(tmp);
-   return(tmp[cnt / 2]);
+   int best = 0;
+   for(int i = 0; i < cnt; i++)
+      if(g_runHist[base + i] > best) best = g_runHist[base + i];
+   return(best);
+}
+
+//  Bars a timeframe's bars are worth, for the tooltip.
+int BarMinutes(ENUM_TIMEFRAMES tf)
+{
+   int secs = PeriodSeconds(tf);
+   if(secs <= 0) return(0);
+   int mins = secs / 60;
+   return(mins < 1 ? 1 : mins);
+}
+
+string MinutesText(int bars, int minsPerBar)
+{
+   long total = (long)bars * (long)minsPerBar;
+   if(total < 60) return(IntegerToString((int)total) + " min");
+   int h = (int)(total / 60);
+   int m = (int)(total % 60);
+   if(m == 0) return(IntegerToString(h) + " h");
+   return(IntegerToString(h) + " h " + IntegerToString(m) + " min");
+}
+
+//  One cell: "UP 6/30%L".  If it would not fit its column the bars are
+//  dropped first, then the estimate, so alignment can never break.
+string LeftCell(string label, int barsLeft, int pctLeft, bool ok, int maxW)
+{
+   if(!ok) return(label);
+
+   string withBars = label + " " + IntegerToString(barsLeft) + "/" +
+                     IntegerToString(pctLeft) + "%L";
+   if(StringLen(withBars) <= maxW) return(withBars);
+
+   string pctOnly = label + " " + IntegerToString(pctLeft) + "%L";
+   if(StringLen(pctOnly) <= maxW) return(pctOnly);
+
+   return(label);
 }
 
 //  Replay the vote over closed bars that are already loaded, so the
@@ -1642,9 +1745,18 @@ bool UpdateLane(int idx)
    TrackState(idx * 2 + 1, g_lane[idx].regime);
 
    g_lane[idx].trendAge  = g_runNow[idx * 2];
-   g_lane[idx].trendMed  = RunMedian(idx * 2);
    g_lane[idx].regimeAge = g_runNow[idx * 2 + 1];
-   g_lane[idx].regimeMed = RunMedian(idx * 2 + 1);
+
+   g_lane[idx].trendLeftOk  = RemainingRun(idx * 2,     g_lane[idx].trendAge,
+                                           g_lane[idx].trendLeft,
+                                           g_lane[idx].trendLeftPct,
+                                           g_lane[idx].trendLo,
+                                           g_lane[idx].trendHi);
+   g_lane[idx].regimeLeftOk = RemainingRun(idx * 2 + 1, g_lane[idx].regimeAge,
+                                           g_lane[idx].regimeLeft,
+                                           g_lane[idx].regimeLeftPct,
+                                           g_lane[idx].regimeLo,
+                                           g_lane[idx].regimeHi);
 
    g_lane[idx].ready = true;
    return(true);
@@ -1700,23 +1812,6 @@ string SignalText(int s)
    return("NO SIGNAL");
 }
 
-//  The AGE column is 7 characters wide.  "age/median" is shown when it
-//  fits; on a very long run the median is dropped rather than letting
-//  the text run into REGIME.
-string AgeText(int age, int med)
-{
-   if(age < 0) age = 0;
-   string a = IntegerToString(age);
-   string m = (med <= 0 ? "-" : IntegerToString(med));
-
-   if(StringLen(a) + 1 + StringLen(m) <= 7)
-      return(a + "/" + m);
-
-   //  Too wide: the age is the number that matters.
-   if(StringLen(a) <= 7) return(a);
-   return("LONG");
-}
-
 //------------------------------------------------------------------
 //  Hourly line to the Experts log, so the panel can be checked
 //------------------------------------------------------------------
@@ -1749,10 +1844,21 @@ void LogLanes()
                         g_lane[i].name, g_lane[i].haveBars, g_lane[i].needBars);
          continue;
       }
-      PrintFormat("%s trend %s %d/%d, regime %s %d/%d, z=%.2f, slope ratio %.3f, votes %d %d %d, score %d, %s",
+      string tLeft = (g_lane[i].trendLeftOk
+                      ? StringFormat("%d bars left (%d%%), age %d",
+                                     g_lane[i].trendLeft, g_lane[i].trendLeftPct,
+                                     g_lane[i].trendAge)
+                      : StringFormat("age %d, no estimate yet", g_lane[i].trendAge));
+      string rLeft = (g_lane[i].regimeLeftOk
+                      ? StringFormat("%d bars left (%d%%), age %d",
+                                     g_lane[i].regimeLeft, g_lane[i].regimeLeftPct,
+                                     g_lane[i].regimeAge)
+                      : StringFormat("age %d, no estimate yet", g_lane[i].regimeAge));
+
+      PrintFormat("%s trend %s %s | regime %s %s | z=%.2f slope %.3f | votes %d %d %d score %d %s",
                   g_lane[i].name,
-                  TrendText(g_lane[i].trend), g_lane[i].trendAge, g_lane[i].trendMed,
-                  RegimeText(g_lane[i].regime), g_lane[i].regimeAge, g_lane[i].regimeMed,
+                  TrendText(g_lane[i].trend), tLeft,
+                  RegimeText(g_lane[i].regime), rLeft,
                   g_lane[i].zValue, g_lane[i].slopeRatio,
                   g_lane[i].trend, g_lane[i].vMom, g_lane[i].vStr,
                   g_lane[i].score, SignalText(g_lane[i].signal));
@@ -1779,6 +1885,12 @@ void LogLanes()
 //  which makes removing surplus objects after a redraw trivial.
 //==================================================================
 #define COL_RIGHT 30            // where the right-hand column starts
+//  Lane table columns.  TREND and REGIME hold "LABEL 6/30%L" and are
+//  sized from the widest string that format can produce.
+#define LANE_TREND_W    14
+#define LANE_REGIME_W   16
+#define LANE_SCORE_W    7
+#define LANE_SIGNAL_W   10
 #define ROW_EXTRA 11            // row pitch = font size + this (as SimpleEA)
 
 //  g_line[], g_lineClr[], g_lineSegFrom[], g_lineSegN[], g_segText[]
@@ -1792,6 +1904,7 @@ void ResetLines()
    ArrayResize(g_lineSegN, 0);
    ArrayResize(g_segText, 0);
    ArrayResize(g_segClr, 0);
+   ArrayResize(g_segTip, 0);
 }
 
 void AddLine(string text, color clr)
@@ -1807,10 +1920,12 @@ void AddLine(string text, color clr)
    g_lineSegN[n]    = 0;
 }
 
-void AddSegLine(string &texts[], color &clrs[])
+//  A line of coloured pieces, each with optional hover text.
+void AddSegLineTip(string &texts[], color &clrs[], string &tips[])
 {
    int nseg = ArraySize(texts);
    if(nseg <= 0) { AddLine("", CLR_TEXT); return; }
+   int ntip = ArraySize(tips);
 
    string full = "";
    for(int i = 0; i < nseg; i++) full += texts[i];
@@ -1830,9 +1945,18 @@ void AddSegLine(string &texts[], color &clrs[])
       int k = ArraySize(g_segText);
       ArrayResize(g_segText, k + 1);
       ArrayResize(g_segClr, k + 1);
+      ArrayResize(g_segTip, k + 1);
       g_segText[k] = texts[i];
       g_segClr[k]  = clrs[i];
+      g_segTip[k]  = (i < ntip ? tips[i] : "");
    }
+}
+
+//  A line of coloured pieces with no hover text.
+void AddSegLine(string &texts[], color &clrs[])
+{
+   string none[];
+   AddSegLineTip(texts, clrs, none);
 }
 
 
@@ -1845,37 +1969,121 @@ void LaneRow(int idx)
 {
    string tfTxt     = g_lane[idx].name;
    string trendTxt  = "-";
-   string ageTxt    = "-";
    string regimeTxt = "-";
    string scoreTxt  = "-";
    string signalTxt = "-";
    string statusTxt = "DATA WAIT";
+
+   string trendTip  = "";
+   string regimeTip = "";
+   string scoreTip  = "";
+   string signalTip = "";
 
    color trendClr  = CLR_DIM;
    color signalClr = CLR_DIM;
 
    if(g_lane[idx].ready)
    {
-      trendTxt  = TrendText(g_lane[idx].trend);
-      ageTxt    = AgeText(g_lane[idx].trendAge, g_lane[idx].trendMed);
-      regimeTxt = RegimeText(g_lane[idx].regime);
+      string tfName = g_lane[idx].name;
+      int    mPB    = BarMinutes(g_lane[idx].tf);
+
+      trendClr  = TrendColour(g_lane[idx].trend);
+      signalClr = SignalColour(g_lane[idx].signal);
+
+      trendTxt  = LeftCell(TrendText(g_lane[idx].trend),
+                           g_lane[idx].trendLeft, g_lane[idx].trendLeftPct,
+                           g_lane[idx].trendLeftOk, LANE_TREND_W);
+
+      regimeTxt = LeftCell(RegimeText(g_lane[idx].regime),
+                           g_lane[idx].regimeLeft, g_lane[idx].regimeLeftPct,
+                           g_lane[idx].regimeLeftOk, LANE_REGIME_W);
+
       scoreTxt  = ScoreText(g_lane[idx].score);
       signalTxt = SignalText(g_lane[idx].signal);
       statusTxt = "SIGNAL ONLY";
-      trendClr  = TrendColour(g_lane[idx].trend);
-      signalClr = SignalColour(g_lane[idx].signal);
+
+      // ---- hover text: the only explanation on the panel -------
+      if(g_lane[idx].trendLeftOk)
+         trendTip = StringFormat(
+            "%s trend %s. About %d more bars (%s). %d%% of its life left - "
+            "a total of about %d bars, %d already used. Similar past runs "
+            "went on for %d to %d more.",
+            tfName, TrendText(g_lane[idx].trend),
+            g_lane[idx].trendLeft, MinutesText(g_lane[idx].trendLeft, mPB),
+            g_lane[idx].trendLeftPct,
+            g_lane[idx].trendAge + g_lane[idx].trendLeft,
+            g_lane[idx].trendAge,
+            g_lane[idx].trendLo, g_lane[idx].trendHi);
+      else
+      {
+         int done = g_lane[idx].trendAge;
+         int seen = MaxRun(idx * 2);
+         if(seen > 0 && done >= seen)
+            trendTip = StringFormat(
+               "%s trend %s has already run %d bars - longer than any run in its "
+               "history (longest %d). No honest estimate of what is left.",
+               tfName, TrendText(g_lane[idx].trend), done, seen);
+         else
+            trendTip = StringFormat(
+               "%s trend %s. Not enough completed runs yet to say how much longer "
+               "it lasts. Age so far: %d bars.",
+               tfName, TrendText(g_lane[idx].trend), done);
+      }
+
+      if(g_lane[idx].regimeLeftOk)
+         regimeTip = StringFormat(
+            "%s regime %s. About %d more bars (%s). %d%% of its life left - "
+            "a total of about %d bars, %d already used. Similar past runs "
+            "went on for %d to %d more.",
+            tfName, RegimeText(g_lane[idx].regime),
+            g_lane[idx].regimeLeft, MinutesText(g_lane[idx].regimeLeft, mPB),
+            g_lane[idx].regimeLeftPct,
+            g_lane[idx].regimeAge + g_lane[idx].regimeLeft,
+            g_lane[idx].regimeAge,
+            g_lane[idx].regimeLo, g_lane[idx].regimeHi);
+      else
+      {
+         int done = g_lane[idx].regimeAge;
+         int seen = MaxRun(idx * 2 + 1);
+         if(seen > 0 && done >= seen)
+            regimeTip = StringFormat(
+               "%s regime %s has already run %d bars - longer than any run in its "
+               "history (longest %d). No honest estimate of what is left.",
+               tfName, RegimeText(g_lane[idx].regime), done, seen);
+         else
+            regimeTip = StringFormat(
+               "%s regime %s. Not enough completed runs yet to say how much longer "
+               "it lasts. Age so far: %d bars.",
+               tfName, RegimeText(g_lane[idx].regime), done);
+      }
+
+      int agree = (g_lane[idx].score < 0 ? -g_lane[idx].score : g_lane[idx].score);
+      scoreTip = StringFormat(
+         "%d of 3 votes agree. Trend %d, momentum %d, structure %d.",
+         agree, g_lane[idx].trend, g_lane[idx].vMom, g_lane[idx].vStr);
+
+      signalTip = "BUY or SELL needs 2 of the 3 votes to agree. "
+                  "Two agreeing is 2/3, all three is 3/3.";
    }
 
-   string segT[7];
-   color  segC[7];
-   segT[0] = " " + Pad(tfTxt, 7);   segC[0] = CLR_TEXT;
-   segT[1] = Pad(trendTxt, 7);      segC[1] = trendClr;
-   segT[2] = Pad(ageTxt, 7);        segC[2] = CLR_DIM;
-   segT[3] = Pad(regimeTxt, 9);     segC[3] = CLR_TEXT;
-   segT[4] = Pad(scoreTxt, 7);      segC[4] = CLR_VALUE;
-   segT[5] = Pad(signalTxt, 10);    segC[5] = signalClr;
-   segT[6] = statusTxt;             segC[6] = CLR_DIM;
-   AddSegLine(segT, segC);
+   string segT[6];
+   color  segC[6];
+   string segP[6];
+   segT[0] = " " + Pad(tfTxt, 7);              segC[0] = CLR_TEXT;
+   segT[1] = Pad(trendTxt,  LANE_TREND_W);     segC[1] = trendClr;
+   segT[2] = Pad(regimeTxt, LANE_REGIME_W);    segC[2] = CLR_TEXT;
+   segT[3] = Pad(scoreTxt,  LANE_SCORE_W);     segC[3] = CLR_VALUE;
+   segT[4] = Pad(signalTxt, LANE_SIGNAL_W);    segC[4] = signalClr;
+   segT[5] = statusTxt;                        segC[5] = CLR_DIM;
+
+   segP[0] = "";
+   segP[1] = trendTip;
+   segP[2] = regimeTip;
+   segP[3] = scoreTip;
+   segP[4] = signalTip;
+   segP[5] = "Nothing is sent to the broker in this build.";
+
+   AddSegLineTip(segT, segC, segP);
 }
 
 //  Two columns at the exact positions used by the automate.md sketch:
@@ -1889,11 +2097,12 @@ string TwoCol(string left, string right)
 //  TRADE STATUS at columns 1, 8, 15, 22, 31, 38 and 48.  SIGNAL is 10
 //  wide because NO SIGNAL is 9 characters and needs one separating
 //  space before TRADE STATUS.
-string TableRow(string tf, string trend, string age, string regime,
+string TableRow(string tf, string trend, string regime,
                 string score, string signal, string status)
 {
-   return(" " + Pad(tf, 7) + Pad(trend, 7) + Pad(age, 7) + Pad(regime, 9) +
-          Pad(score, 7) + Pad(signal, 10) + status);
+   return(" " + Pad(tf, 7) + Pad(trend, LANE_TREND_W) +
+          Pad(regime, LANE_REGIME_W) + Pad(score, LANE_SCORE_W) +
+          Pad(signal, LANE_SIGNAL_W) + status);
 }
 
 int LaneBars(ENUM_TIMEFRAMES tf)
@@ -1959,7 +2168,7 @@ void BuildPanel()
    //  engine.  A lane whose history is too shallow says DATA WAIT
    //  rather than reading a regime from half a window.
    // ---------------------------------------------------------------
-   AddLine(TableRow("TF", "TREND", "AGE", "REGIME", "SCORE", "SIGNAL",
+   AddLine(TableRow("TF", "TREND", "REGIME", "SCORE", "SIGNAL",
                     "TRADE STATUS"), CLR_SECTION);
    for(int i = 0; i < LANE_COUNT; i++) LaneRow(i);
    AddLine("", CLR_TEXT);
@@ -2025,6 +2234,15 @@ void EnsureRect(string name, int x, int y, int w, int h, color bg, color border)
 //  A label is never given an empty string.  A freshly created chart
 //  object carries its type name as the description, so an empty text
 //  renders the literal word "Label" - a single space avoids that.
+//  Hover text.  Written on every draw rather than compared first: an
+//  OBJPROP_TOOLTIP read on a freshly created label is not always the
+//  empty string, and a stale tooltip is worse than a redundant write.
+void ApplyTip(string name, string tip)
+{
+   if(ObjectFind(0, name) < 0) return;
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
+}
+
 void EnsureLabel(string name, int x, int y, string text, color clr)
 {
    string shown = (text == "") ? " " : text;
@@ -2108,7 +2326,9 @@ void DrawPanel()
 
       if(g_lineSegFrom[i] < 0)
       {
-         EnsureLabel(PANEL_PREFIX + "T" + IntegerToString(idx), x0, y, g_line[i], g_lineClr[i]);
+         string nm = PANEL_PREFIX + "T" + IntegerToString(idx);
+         EnsureLabel(nm, x0, y, g_line[i], g_lineClr[i]);
+         ApplyTip(nm, "");
          idx++;
          continue;
       }
@@ -2118,7 +2338,9 @@ void DrawPanel()
       for(int s = 0; s < g_lineSegN[i]; s++)
       {
          int k = g_lineSegFrom[i] + s;
-         EnsureLabel(PANEL_PREFIX + "T" + IntegerToString(idx), cx, y, g_segText[k], g_segClr[k]);
+         string nm = PANEL_PREFIX + "T" + IntegerToString(idx);
+         EnsureLabel(nm, cx, y, g_segText[k], g_segClr[k]);
+         ApplyTip(nm, g_segTip[k]);
          idx++;
          cx += TextWidth(g_segText[k]);
       }
@@ -2330,10 +2552,18 @@ int OnInit()
       g_lane[i].regime     = 2;
       g_lane[i].score      = 0;
       g_lane[i].signal     = 0;
-      g_lane[i].trendAge   = 0;
-      g_lane[i].trendMed   = 0;
-      g_lane[i].regimeAge  = 0;
-      g_lane[i].regimeMed  = 0;
+      g_lane[i].trendAge     = 0;
+      g_lane[i].regimeAge    = 0;
+      g_lane[i].trendLeft     = 0;
+      g_lane[i].trendLeftPct  = 0;
+      g_lane[i].trendLo       = 0;
+      g_lane[i].trendHi       = 0;
+      g_lane[i].regimeLeft    = 0;
+      g_lane[i].regimeLeftPct = 0;
+      g_lane[i].regimeLo      = 0;
+      g_lane[i].regimeHi      = 0;
+      g_lane[i].trendLeftOk  = false;
+      g_lane[i].regimeLeftOk = false;
       g_lane[i].slopeRatio = 0.0;
       g_lane[i].zValue     = 0.0;
       g_lane[i].vMom       = 0;
