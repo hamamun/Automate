@@ -687,24 +687,45 @@ answers the only question worth asking of a live panel: **how much longer**.
  Diary:                        Unknown future costs:
 ```
 
-`6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
-still ahead. `L` = left, and it applies to both numbers. `Max` = this run is already
-longer than any run on record for that lane, so no number is claimed.
+The panel is built in three groups. Group 1 is always visible; group 2 appears when
+there is a direction; group 3 is the diary.
 
-| Column | Character | Width | Contents |
-|---|---|---|---|
-| TF | 1 | 7 | `M5` `M15` `M30` |
-| TREND | 8 | 14 | `UP 6/30%L`, `UP Max`, or just `UP` |
-| REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
-| SCORE | 38 | 7 | `3/3` … `0/3` |
-| SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
-| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
+```text
+ AUTOMATE    XAUUSDm  |  Crypto  |  Hedging          <- header, always
+ MARKET OPEN | Session: unknown | Spread: 100.0 pts
 
-The header is unchanged from the earlier draft apart from losing AGE. Widest line is
-67 characters. A cell that would exceed its column drops the bar count first, then
-the estimate, so alignment cannot break.
+ TF     TREND         REGIME          SCORE  SIGNAL     TRADE STATUS   <- group 1
+ M5     UP 17/52%L     Choppy          1/3    BUY 24%    SIGNAL ONLY
+ M15    FLAT 12/34%L   Choppy          1/3    NO SIGNAL  SIGNAL ONLY
+ M30    FLAT 11/69%L   Choppy 22/48%L 1/3    NO SIGNAL  SIGNAL ONLY
 
-### 11.1 How the two numbers relate
+ (group 2 - to be specified by the owner, shown only when a direction exists)
+
+ Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0     <- group 3
+         all     S38/S31/S12    W0/W0/W0       L0/W0/L0
+ Health: Cost Watch | Tweak: off
+```
+
+### 11.1 The diary line
+
+Order inside every block is fixed as **M5 / M15 / M30**, top to bottom, matching group 1
+directly above, so no legend is printed. Each block is padded to a fixed width, which
+means the panel width **never changes** as counts grow - at `S999/S999/S999` the line is
+still 60 characters, inside the 67-character table.
+
+`S` = signals graded. `W` = won. `L` = lost.
+
+**W and L mean trades, and nothing else.** Until entry exists there are no trades, so
+both print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
+a letter that changes meaning halfway through a file is a letter that cannot be trusted.
+Claim quality - whether our own durability and life figures were honest - is read in the
+details panel (§11.5), which is what it is for.
+
+`Health:` carries the trade diagnostics (cost, score, box, chop) once there are enough
+closed trades, and `Tweak:` mirrors the switch in §6.3. Both are advisory: neither ever
+gates a signal, a stop, a target or a size.
+
+### 11.2 How the two numbers relate
 
 `barsLeft` is a median. The percent is that same median against the run's implied
 whole life:
@@ -717,13 +738,13 @@ pctLeft = 100 x barsLeft / total
 So 6 bars left at age 14 is 30 % of a 20-bar life. The two never disagree, because
 one is computed from the other.
 
-### 11.2 Why the numbers are not constant per timeframe
+### 11.3 Why the numbers are not constant per timeframe
 
 There is no per-lane horizon setting. The horizon is whatever that lane's own runs
 do. On a quiet symbol the trend turns every 6 bars; on a strong one it runs 40. The
 panel reports what it measures, which is the only version that can be right on both.
 
-### 11.3 Hover text is the only explanation
+### 11.4 Hover text is the only explanation
 
 The panel carries no legend, by request. Each cell explains itself on hover:
 
@@ -752,6 +773,54 @@ Colour: TREND and SIGNAL carry direction colour; REGIME, SCORE and TRADE STATUS 
 plain. Text always carries the meaning.
 
 ---
+
+### 11.5 The details panel
+
+Opt-in through a single input, `Diary details`, default `false`. When true, a second
+panel is drawn to the **right** of the main panel with a fixed 12 px gap.
+
+| Block | Contents |
+|---|---|
+| CALIBRATION | claimed against actual: `durability said 22% held 24% (n=38)`, `trend life said 30 bars lasted 26 (n=41)` |
+| RECENT | the last ~8 graded claims, one line each: lane, what was said, what happened, hit or miss |
+| SAMPLES | sample count per lane, or `too few to judge` under the threshold |
+| FILE | rows written, file name, last save, write errors |
+
+Four rules, all required:
+
+1. **One source of truth.** The details panel shows the same numbers as the diary line.
+   Two panels that disagree teach the owner to trust neither.
+2. **A block with no data is not drawn.** No placeholder text, no `Unknown future costs`.
+3. **Read-only.** No clicks, no buttons, no object events. It never writes and never
+   changes anything.
+4. **It must survive a narrow chart.** Position is computed from the main panel's real
+   measured width, after that panel has been drawn. If the details panel would run past
+   the chart edge, RECENT shrinks first; if it still does not fit, the panel stacks below.
+   All of its objects share one prefix and are deleted together with the main panel.
+
+Turning the input on or off restarts the EA. The diary file keeps everything, so only the
+in-memory run history goes cold for the first few minutes.
+
+`Diary details` is the second input in the project, and it passes all three tests in
+§2.1: leaving it at `false` is never wrong, it switches a view rather than defining a
+measurement, and the owner asked for it by name.
+
+`6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
+still ahead. `L` = left, and it applies to both numbers. `Max` = this run is already
+longer than any run on record for that lane, so no number is claimed.
+
+| Column | Character | Width | Contents |
+|---|---|---|---|
+| TF | 1 | 7 | `M5` `M15` `M30` |
+| TREND | 8 | 14 | `UP 6/30%L`, `UP Max`, or just `UP` |
+| REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
+| SCORE | 38 | 7 | `3/3` … `0/3` |
+| SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
+| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
+
+The header is unchanged from the earlier draft apart from losing AGE. Widest line is
+67 characters. A cell that would exceed its column drops the bar count first, then
+the estimate, so alignment cannot break.
 
 ## 12. What will not be built
 
