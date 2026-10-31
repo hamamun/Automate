@@ -3587,6 +3587,16 @@ void LaneRow(int idx)
                tfName, RegimeText(g_lane[idx].regime), done);
       }
 
+      //  The label is a measurement, so the hover says the measurement.
+      //  A row that reads Choppy on a strong trend is not a fault: the
+      //  trend is the last 30 bars, the regime is the last 24 hours.
+      regimeTip += StringFormat(
+         " The label is the last %d hours of price: the net move is %.2f "
+         "standard deviations of what a market with no drift would produce. "
+         "Steady needs %.1f, Mixed needs %.1f, so this reads %s.",
+         REGIME_HOURS, MathAbs(g_lane[idx].zValue), Z_STEADY, Z_MIXED,
+         RegimeText(g_lane[idx].regime));
+
       if(g_lane[idx].signal == 0)
          signalTip = "No BUY or SELL: the three votes do not agree strongly "
                      "enough. BUY needs 2 of 3, SELL needs 2 of 3.";

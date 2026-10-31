@@ -131,6 +131,12 @@ hours liquid pairs produce roughly 15 / 13 / 70 and the label actually moves.
 
 **On a choppy instrument `Choppy` is the correct answer, not a fault.**
 
+**A row can read UP and Choppy at once.** `TREND` is the last 30 bars; `REGIME` is the last
+24 hours. A market that rallied all morning after a flat night is `UP` on the trend and
+`Choppy` on the day, and both are true. The hover says the reading — the net move in
+standard deviations against the two thresholds — so a `Choppy` row explains why it is not
+`Steady`.
+
 **Regime never blocks a signal.** A valid BUY in Choppy is still shown as BUY.
 
 ### SCORE — agreement, never a probability
