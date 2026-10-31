@@ -115,11 +115,11 @@ That is a label that means something: on noise it nearly always says Choppy.
 
 ### 4.1 The problem
 
-| Lane | 20 bars is | 128 hours is |
+| Lane | 20 bars is | 24 hours is |
 |---|---|---|
-| M5 | 100 minutes | 1536 bars |
-| M15 | 5 hours | 512 bars |
-| M30 | 10 hours | 256 bars |
+| M5 | 100 minutes | 288 bars |
+| M15 | 5 hours | 96 bars |
+| M30 | 10 hours | 48 bars |
 
 A 20-bar ER on M5 samples a coffee break; on M30 it samples half a trading day. Comparing
 those three numbers is comparing three different questions.
@@ -133,13 +133,29 @@ Votes that must react quickly stay **per-lane in bars**. The regime label become
 |---|---|---|---|---|
 | momentum window | bars | 2 | 2 | 2 |
 | structure window | bars | 20 | 20 | 20 |
-| drift span for `z` | **hours** | 128 h → 1536 bars | 128 h → 512 bars | 128 h → 256 bars |
-| closed bars loaded | bars | 1537 | 513 | 450 |
+| drift span for `z` | **hours** | 24 h → 288 bars | 24 h → 96 bars | 24 h → 48 bars |
+| closed bars loaded | bars | 289 | 97 | 49 |
 
 
-128 hours is 5.3 days: enough to span every weekday session at least once. This is a
-**candidate**, not a law — it is the number SimpleEA arrived at and the one I would test
-first.
+**24 hours, revised down from 128 on evidence.** The first build used 128 hours. Measured
+on real 5-minute candles that is 1 536 bars, and two neighbouring readings are almost the
+same number - lag-1 autocorrelation 0.98 to 0.999 - so a whole file yielded only about
+**13 independent observations**. The practical result was a column that read `Choppy` on
+100 % of bars.
+
+That reading was not a bug. At 128 hours these markets genuinely do not drift: the
+variance ratio, the canonical random-walk test (Lo-MacKinlay 1988), came in at **0.04 to
+0.36** on the crypto pairs, where 1.0 means a random walk and below 1 means mean
+reversion. Price snaps back faster than a random walk would, so a two-sigma drift almost
+never occurs.
+
+At 24 hours the same thresholds behave as designed. On liquid pairs the split comes out at
+**18.5 / 12.8 / 68.7** and **13.1 / 14.3 / 72.5**, close to the intended 5 / 20 / 75, and
+the label changes on 1 to 3 % of bars instead of never. Illiquid pairs still read `Choppy`
+almost always, which is the correct description of them.
+
+**Consequence:** the history a lane needs falls with it - 1 089 closed M5 bars instead of
+2 337.
 
 **Consequence:** stage 1 showed `M5 100259 bars` on the user's terminal, so history depth is
 not a problem in practice. On a symbol with shallow history the lane shows `DATA WAIT`
@@ -232,6 +248,96 @@ The panel shows `3/3`, `2/3`, `1/3`, `0/3` — **agreement, never a probability*
 
 Measured on synthetic data during design: a Gaussian random walk reaches 3/3 in roughly a
 third of trials. That is the number to keep in mind whenever the panel looks confident.
+
+### 6.1 "Signal confidence" — what was tested and what was refused
+
+The score is **locked** and does not change. The question asked of it was narrower: can
+anything tell us **how long the current score will last**?
+
+**Conventional indicators were tested and refused.** Nine features — RSI, ADX, ATR ratio,
+Bollinger width, Stochastic, CCI, MACD histogram, plus the run's age and the score itself —
+were put through a logistic model and trained on one era, tested on another.
+
+| Split | score + age | adding indicators |
+|---|---|---|
+| 2018 -> 2025 | AUC 0.624 | AUC 0.657 (helps) |
+| 2025 -> 2018 | AUC 0.663 | AUC 0.653 (hurts) |
+
+The improvement **reverses when the eras are swapped**, so it is noise, not signal. The
+model is also badly calibrated out of sample: the fifth of bars it rated most likely to
+persist came true 35.5 % of the time against a 45.1 % prediction, while the fifth it rated
+least likely came true **more** often than predicted (15.6 % against 8.9 %).
+
+A confidence percentage built on that would be a confident-looking number with no
+foundation. That is the same failure as the 128-hour regime span, caught before shipping.
+
+**What does carry information is the score itself**, counted directly with no model:
+
+| Score | lasts 3 more bars (2018) | (2025) |
+|---|---|---|
+| +3 / -3 | 10.1 % / 10.6 % | 18.4 % / 17.4 % |
+| +2 / -2 | 5.5 % / 5.3 % | 6.7 % / 6.0 % |
+| +1 / -1 | 4.0 % / 3.4 % | 3.5 % / 3.4 % |
+| 0 | 4.3 % | 2.3 % |
+
+The ordering is monotonic and holds in both eras: **an extreme score is the stickiest
+state, a moderate one the least durable.** The level differs by era (roughly 10 % against
+17 % for 3/3), so any display must be coarse.
+
+| Signal | lasts 5 more bars (2018) | (2025) |
+|---|---|---|
+| BUY / SELL | 8.5 % / 9.0 % | 14.1 % / 9.1 % |
+| NO SIGNAL | 37.6 % | 30.8 % |
+
+**Decision:** no indicator-based confidence is built. If a persistence figure is ever
+shown, it comes from counting this table in the EA's own run history - the machinery for
+which already exists - and it belongs in the hover text as a rough band, never as a
+precise percentage on the panel.
+
+### 6.2 What was built instead: the SIGNAL cell carries a durability figure
+
+The user asked for the percentage to sit on the signal rather than on the score, and
+chose durability over a strength score. That is what ships.
+
+```
+SIGNAL cell    SELL 22%     ->  22% chance this SELL is still standing in 3 bars
+               SELL         ->  not enough history to say
+               NO SIGNAL    ->  nothing to expire, unchanged
+```
+
+**The estimator** - no model, no fitted coefficients, one division:
+
+```
+P = runs that reached (age + 3) / runs that reached age
+```
+
+Counted over this lane's own completed signal runs, up to 400 of them, and only reported
+when at least 12 runs are at risk. Because it is counted locally, the era problem in 6.1
+dissolves: a symbol whose signals last longer reports a higher number without any
+constant being touched.
+
+**Measured on real candles**, 15 012 signal bars:
+
+| Quantity | Result |
+|---|---|
+| bars showing a percentage | 79 % |
+| median reading | 19 % |
+| 90th percentile | 32 % |
+| widest cell | `BUY 100%` = 10 of 10 characters |
+| calibration, 2018 | predicted 20.1 %, happened 18.4 % |
+| calibration, 2025 | predicted 22.9 %, happened 24.4 % |
+
+The figure rises with age as it should - 17 % at one bar old, 30 % at five - because a
+run that has already lasted is more likely to keep lasting.
+
+**Why the percent has no `L`.** In TREND and REGIME, `%L` means *share of life left*. In
+SIGNAL it means *chance of still standing*. One letter cannot carry two meanings in one
+row, so the signal cell shows a bare percent and the hover spells out which question is
+being answered.
+
+**What it does not say.** It is not strength and not a reason to trade. It says how long
+the label is likely to stay lit. Measured separately, the score predicts the *size* of the
+next move but not its direction, and no confidence number changes that.
 
 ---
 
@@ -396,13 +502,15 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `STRUCTURE_PERIOD` | 20 | net-move window for the structure vote |
 | `MOMENTUM_PERIOD` | 2 | two-bar close change |
 | `PIVOT_WING` | 1 | 3-bar pivot: one closed bar each side |
-| `REGIME_HOURS` | 128 | equalised drift span |
+| `REGIME_HOURS` | 24 | equalised drift span |
 | `Z_STEADY` / `Z_MIXED` | 2.0 / 1.0 | regime boundaries in standard deviations |
 | `TREND_BAND_X` | 0.20 | trend deadband, in units of `med` |
 | `MOVE_BAND_X` | 0.50 | move deadband = `0.50 x med x sqrt(horizon)` |
 | `MOVE_BAND_TICKS` | 1.00 | floor of the move deadband, in ticks |
 | `AGE_HISTORY` | 400 | completed runs kept per state |
 | `MIN_REMAIN_SAMPLES` | 6 | surviving runs needed before a remaining life is claimed |
+| `SIGNAL_DURA_BARS` | 3 | "still standing this many bars on" |
+| `MIN_DURA_SAMPLES` | 12 | runs at risk before a signal durability is claimed |
 | `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
 
@@ -505,7 +613,7 @@ answers the only question worth asking of a live panel: **how much longer**.
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
  TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
- M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY 24%   SIGNAL ONLY
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
  M30    DOWN Max     Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
@@ -565,6 +673,10 @@ The panel carries no legend, by request. Each cell explains itself on hover:
 | SIGNAL cell | "BUY or SELL needs 2 of the 3 votes to agree." |
 | TRADE STATUS | "Nothing is sent to the broker in this build." |
 
+The SIGNAL hover reads: *"SELL has stood for 2 bars. Of the past SELL runs on this symbol
+that reached this age, 22% were still standing 3 bars later. Counted from this symbol's
+own history, not a fixed rule."*
+
 The `Max` hover reads: *"M30 trend DOWN has already run 61 bars - longer than any run in
 its history (longest 58). Shown as Max: no honest estimate of what is left."*
 
@@ -591,6 +703,7 @@ plain. Text always carries the meaning.
 | Multiplied votes | hides which vote disagreed |
 | A regime veto | D5, and it is a separate decision if ever wanted |
 | Self-learning that rewrites the signal | out of scope; the diary stays observational |
+| Indicator-based signal confidence | tested and refused, section 6.1 - the gain reverses when the eras swap |
 
 ---
 
@@ -614,6 +727,14 @@ plain. Text always carries the meaning.
    | remaining-life coverage | 69 % at attach, 85-92 % mid, ~100 % with full history |
    | remaining-life zeros | 0.0 % - the rejected formula gave 64.8 % |
    | widest rendered cell | TREND 12 of 14, REGIME 15 of 16 |
+   | signal durability shown | 79 % of signal bars, median 19 %, range 1-65 % |
+   | signal durability calibration | 20.1 % predicted vs 18.4 % actual (2018); 22.9 vs 24.4 (2025) |
+
+   Persistence study, on real candles (section 6.1): nine conventional indicators failed
+   to improve the score's own durability estimate out of sample - AUC went 0.624 -> 0.657
+   in one direction and 0.663 -> 0.653 in the other - and the fitted model was
+   miscalibrated in the test era. The score value alone separates persistence cleanly:
+   3/3 lasts three more bars about 10 % of the time against 4 % for 1/3.
 
    Both remaining-life estimates are populated on ~99 % of bars, which is what the
    column needs to mean anything. Every score occurs, so `2/3` and `1/3` are real states and the three votes
@@ -637,7 +758,7 @@ plain. Text always carries the meaning.
 
 | # | Question | Status |
 |---|---|---|
-| Q1 | Regime window equalised | **decided**, 128 h candidate |
+| Q1 | Regime window equalised | **decided** at 24 h - 128 h was tested and could not resolve a label |
 | Q2 | How to show duration on the panel | **decided** - `bars/%L` inside TREND and REGIME; a separate AGE column was built first and then removed as redundant |
 | Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
 | Q4 | Should the SIGNAL also carry a remaining life | open - the code tracks TREND and REGIME runs only; signal is not tracked as a run |

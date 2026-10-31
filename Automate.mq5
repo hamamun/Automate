@@ -60,7 +60,14 @@
 #define TREND_PERIOD        30      // regression window for the trend vote
 #define STRUCTURE_PERIOD    20      // net-move window for the structure vote
 #define MOMENTUM_PERIOD     2       // two-bar close change
-#define REGIME_HOURS        128     // equalised drift span, in hours
+//  24 hours, not 128.  A 128-hour span on M5 is 1536 bars, so two
+//  neighbouring readings are almost the same number: measured on real
+//  candles it gave only ~13 independent observations in a whole file,
+//  and the column read Choppy on 100% of bars - correctly, because at
+//  that distance price is not drifting.  At 24 hours the same thresholds
+//  produce the split they were designed for (5/20/75) on liquid pairs,
+//  and the span still means the same 24 hours on every lane.
+#define REGIME_HOURS        24      // equalised drift span, in hours
 #define Z_STEADY            2.0     // regime boundary, standard deviations
 #define Z_MIXED             1.0     // regime boundary, standard deviations
 #define TREND_BAND_X        0.20    // trend deadband, in units of a typical bar
@@ -68,6 +75,8 @@
 #define MOVE_BAND_TICKS     1.00    // floor of the move deadband, in ticks
 #define AGE_HISTORY         400     // completed runs kept per state
 #define MIN_REMAIN_SAMPLES  6       // runs that outlived this age needed
+#define SIGNAL_DURA_BARS    3       // "still standing this many bars on"
+#define MIN_DURA_SAMPLES    12      // runs at risk before a durability is claimed
                                     // before a remaining life is claimed
 #define SEED_BARS           800     // closed bars replayed at attach so AGE
                                     // has a median from the first second
@@ -199,6 +208,9 @@ struct LaneState
    int      signal;      // -1 SELL / 0 none / +1 BUY
    int      trendAge;
    int      regimeAge;
+   int      signalAge;
+   int      signalDuraPct;  // chance this signal still stands N bars on
+   bool     signalDuraOk;
    int      trendLeft;      // bars left, median of runs that outlived the age
    int      trendLeftPct;   // that as a share of the run's whole life
    int      trendLo;        // lower quartile of those residuals
@@ -246,10 +258,14 @@ int    g_sprN[24];
 //  reference.
 LaneState g_lane[LANE_COUNT];
 
-int g_runHist[LANE_COUNT * 2 * AGE_HISTORY];
-int g_runCount[LANE_COUNT * 2];
-int g_runNow[LANE_COUNT * 2];
-int g_runPrev[LANE_COUNT * 2];
+//  Three tracked states per lane: 0 = trend, 1 = regime, 2 = signal.
+#define CH_PER_LANE   3
+#define RUN_CHANNELS  LANE_COUNT * CH_PER_LANE
+
+int g_runHist[RUN_CHANNELS * AGE_HISTORY];
+int g_runCount[RUN_CHANNELS];
+int g_runNow[RUN_CHANNELS];
+int g_runPrev[RUN_CHANNELS];
 #define RUN_UNSET  -99
 
 int g_ehAgree    = 0;   // Ehlers bandpass agreed with the trend vote
@@ -1566,6 +1582,55 @@ bool RemainingRun(int ch, int age, int &barsLeft, int &pctLeft,
    return(true);
 }
 
+//  How likely is the current signal to still be standing in a few bars?
+//
+//  This is the one forward question about a signal that can be answered
+//  honestly.  Direction cannot be - measured on real candles the score
+//  predicts the size of the next move but not its sign.
+//
+//  The answer is a survival fraction, counted from this lane's own
+//  completed runs and nothing else:
+//
+//     P = (runs that reached age + SIGNAL_DURA_BARS)
+//       / (runs that reached age)
+//
+//  Because it is counted locally it needs no constant: a symbol whose
+//  signals last longer simply reports a higher number, and the figure
+//  follows the market when its behaviour changes.  Fitting a model to
+//  fixed thresholds was tried and failed - the coefficients reversed
+//  sign when the sample years were swapped.
+//
+//  Ties are counted the way a trader would: a signal that goes to NO
+//  SIGNAL has ended, even if it comes back later.  Zeros are part of the
+//  run history for exactly that reason.
+bool SignalDurability(int ch, int age, int &pct)
+{
+   pct = 0;
+
+   int cnt = g_runCount[ch];
+   if(cnt < MIN_DURA_SAMPLES) return(false);
+
+   int base    = ch * AGE_HISTORY;
+   int atRisk  = 0;
+   int survives= 0;
+   for(int i = 0; i < cnt; i++)
+   {
+      int len = g_runHist[base + i];
+      if(len < age) continue;              // ended before reaching this age
+      atRisk++;
+      if(len >= age + SIGNAL_DURA_BARS) survives++;
+   }
+   if(atRisk < MIN_DURA_SAMPLES) return(false);
+
+   //  Never 0 and never 100.  With twelve runs at risk, "0%" claims a
+   //  certainty the sample cannot support - the same reason the TREND
+   //  percentage is clamped rather than rounded to the endpoints.
+   pct = (int)MathRound(100.0 * (double)survives / (double)atRisk);
+   if(pct < 1)   pct = 1;
+   if(pct > 99)  pct = 99;
+   return(true);
+}
+
 //  Longest completed run this channel has seen, 0 if none.
 int MaxRun(int ch)
 {
@@ -1599,6 +1664,24 @@ string MinutesText(int bars, int minsPerBar)
 
 //  One cell: "UP 6/30%L".  If it would not fit its column the bars are
 //  dropped first, then the estimate, so alignment can never break.
+//  The SIGNAL cell.  "SELL 22%" - 22% is the chance this signal is still
+//  standing three bars from now, counted from this lane's own runs.
+//  Deliberately WITHOUT the L suffix: in TREND and REGIME, %L means
+//  "share of life left", and one letter cannot mean two things in one
+//  row.  Reading it as a plain percent keeps that promise.
+//
+//  When there is no estimate the cell is just "SELL" - the same honesty
+//  the TREND cell applies when its history is too thin.
+string SignalCell(string label, int pct, bool ok, int maxW)
+{
+   if(!ok) return(label);
+
+   string withPct = label + " " + IntegerToString(pct) + "%";
+   if(StringLen(withPct) <= maxW) return(withPct);
+
+   return(label);
+}
+
 string LeftCell(string label, int barsLeft, int pctLeft, bool ok, bool over, int maxW)
 {
    if(!ok)
@@ -1628,7 +1711,8 @@ string LeftCell(string label, int barsLeft, int pctLeft, bool ok, bool over, int
 //  look-ahead: every bar in the replay is finished, and the vote at
 //  that bar uses only the bars before it - exactly the number the EA
 //  would have printed had it been running.
-void SeedRuns(int idx, const double &close[], int n, int span, double tick)
+void SeedRuns(int idx, const double &close[], const double &high[],
+              const double &low[], int n, int span, double tick)
 {
    int start = n - 1 - SEED_BARS;
    if(start < span) start = span;
@@ -1640,8 +1724,21 @@ void SeedRuns(int idx, const double &close[], int n, int span, double tick)
       if(med <= 0.0) med = tick;
 
       double ratio = RegressionSlope(close, end, TREND_PERIOD) / med;
-      TrackState(idx * 2, TrendVoteFrom(ratio));
-      TrackState(idx * 2 + 1, RegimeCodeOf(DriftZ(close, end, span)));
+      int    tv    = TrendVoteFrom(ratio);
+
+      TrackState(idx * 3,     tv);
+      TrackState(idx * 3 + 1, RegimeCodeOf(DriftZ(close, end, span)));
+
+      //  The signal channel is seeded with the real three-vote score, not
+      //  an approximation: a durability figure counted from anything other
+      //  than what the panel actually shows would be a lie.
+      int mv = MomentumVoteFrom(close, end + 1, med, tick);
+      int sv = StructureVoteFrom(close, high, low, end + 1, med, tick);
+      int sc = tv + mv + sv;
+      int sg = 0;
+      if(sc >=  2) sg =  1;
+      if(sc <= -2) sg = -1;
+      TrackState(idx * 3 + 2, sg);
    }
 }
 
@@ -1748,21 +1845,28 @@ bool UpdateLane(int idx)
       else                                        g_ehDisagree++;
    }
 
-   if(g_runPrev[idx * 2] == RUN_UNSET)
-      SeedRuns(idx, close, count, span, tick);
+   if(g_runPrev[idx * 3] == RUN_UNSET)
+      SeedRuns(idx, close, high, low, count, span, tick);
 
-   TrackState(idx * 2,     g_lane[idx].trend);
-   TrackState(idx * 2 + 1, g_lane[idx].regime);
+   TrackState(idx * 3,     g_lane[idx].trend);
+   TrackState(idx * 3 + 1, g_lane[idx].regime);
+   TrackState(idx * 3 + 2, sig);
 
-   g_lane[idx].trendAge  = g_runNow[idx * 2];
-   g_lane[idx].regimeAge = g_runNow[idx * 2 + 1];
+   g_lane[idx].trendAge  = g_runNow[idx * 3];
+   g_lane[idx].regimeAge = g_runNow[idx * 3 + 1];
+   g_lane[idx].signalAge = g_runNow[idx * 3 + 2];
 
-   g_lane[idx].trendLeftOk  = RemainingRun(idx * 2,     g_lane[idx].trendAge,
+   g_lane[idx].signalDuraOk = (g_lane[idx].signal != 0 &&
+                               SignalDurability(idx * 3 + 2,
+                                                g_lane[idx].signalAge,
+                                                g_lane[idx].signalDuraPct));
+
+   g_lane[idx].trendLeftOk  = RemainingRun(idx * 3,     g_lane[idx].trendAge,
                                            g_lane[idx].trendLeft,
                                            g_lane[idx].trendLeftPct,
                                            g_lane[idx].trendLo,
                                            g_lane[idx].trendHi);
-   g_lane[idx].regimeLeftOk = RemainingRun(idx * 2 + 1, g_lane[idx].regimeAge,
+   g_lane[idx].regimeLeftOk = RemainingRun(idx * 3 + 1, g_lane[idx].regimeAge,
                                            g_lane[idx].regimeLeft,
                                            g_lane[idx].regimeLeftPct,
                                            g_lane[idx].regimeLo,
@@ -1865,13 +1969,20 @@ void LogLanes()
                                      g_lane[i].regimeAge)
                       : StringFormat("age %d, no estimate yet", g_lane[i].regimeAge));
 
-      PrintFormat("%s trend %s %s | regime %s %s | z=%.2f slope %.3f | votes %d %d %d score %d %s",
+      //  The signal's figure goes in the log too, so the number on the
+      //  panel can be checked against what produced it.
+      string sDura = (g_lane[i].signalDuraOk
+                      ? StringFormat("%d%% chance after %d bars", 
+                                     g_lane[i].signalDuraPct, g_lane[i].signalAge)
+                      : StringFormat("age %d, too few runs", g_lane[i].signalAge));
+
+      PrintFormat("%s trend %s %s | regime %s %s | z=%.2f slope %.3f | votes %d %d %d score %d %s | signal %s",
                   g_lane[i].name,
                   TrendText(g_lane[i].trend), tLeft,
                   RegimeText(g_lane[i].regime), rLeft,
                   g_lane[i].zValue, g_lane[i].slopeRatio,
                   g_lane[i].trend, g_lane[i].vMom, g_lane[i].vStr,
-                  g_lane[i].score, SignalText(g_lane[i].signal));
+                  g_lane[i].score, SignalText(g_lane[i].signal), sDura);
    }
 
    int tot = g_ehAgree + g_ehDisagree;
@@ -2002,8 +2113,8 @@ void LaneRow(int idx)
 
       //  Longest completed run each channel has seen. Decided once here so
       //  the cell and the tooltip can never disagree about it.
-      int  seenTrend  = MaxRun(idx * 2);
-      int  seenRegime = MaxRun(idx * 2 + 1);
+      int  seenTrend  = MaxRun(idx * 3);
+      int  seenRegime = MaxRun(idx * 3 + 1);
       bool overTrend  = (seenTrend  > 0 && !g_lane[idx].trendLeftOk  &&
                          g_lane[idx].trendAge  >= seenTrend);
       bool overRegime = (seenRegime > 0 && !g_lane[idx].regimeLeftOk &&
@@ -2018,7 +2129,9 @@ void LaneRow(int idx)
                            g_lane[idx].regimeLeftOk, overRegime, LANE_REGIME_W);
 
       scoreTxt  = ScoreText(g_lane[idx].score);
-      signalTxt = SignalText(g_lane[idx].signal);
+      signalTxt = SignalCell(SignalText(g_lane[idx].signal),
+                             g_lane[idx].signalDuraPct,
+                             g_lane[idx].signalDuraOk, LANE_SIGNAL_W);
       statusTxt = "SIGNAL ONLY";
 
       // ---- hover text: the only explanation on the panel -------
@@ -2075,6 +2188,24 @@ void LaneRow(int idx)
                "longer it lasts. Age so far: %d bars.",
                tfName, RegimeText(g_lane[idx].regime), done);
       }
+
+      if(g_lane[idx].signal == 0)
+         signalTip = "No BUY or SELL: the three votes do not agree strongly "
+                     "enough. BUY needs 2 of 3, SELL needs 2 of 3.";
+      else if(g_lane[idx].signalDuraOk)
+         signalTip = StringFormat(
+            "%s has stood for %d bars. Of the past %s runs on this symbol "
+            "that reached this age, %d%% were still standing %d bars later. "
+            "Counted from this symbol's own history, not a fixed rule.",
+            SignalText(g_lane[idx].signal), g_lane[idx].signalAge,
+            SignalText(g_lane[idx].signal), g_lane[idx].signalDuraPct,
+            SIGNAL_DURA_BARS);
+      else
+         signalTip = StringFormat(
+            "%s has stood for %d bars. Too few past %s runs have reached "
+            "this age to say how long it usually lasts.",
+            SignalText(g_lane[idx].signal), g_lane[idx].signalAge,
+            SignalText(g_lane[idx].signal));
 
       int agree = (g_lane[idx].score < 0 ? -g_lane[idx].score : g_lane[idx].score);
       scoreTip = StringFormat(
@@ -2570,7 +2701,7 @@ int OnInit()
    g_ehAgree    = 0;
    g_ehDisagree = 0;
    ArrayInitialize(g_runHist, 0);
-   for(int c = 0; c < LANE_COUNT * 2; c++)
+   for(int c = 0; c < RUN_CHANNELS; c++)
    {
       g_runCount[c] = 0;
       g_runNow[c]   = 0;
@@ -2598,6 +2729,9 @@ int OnInit()
       g_lane[i].regimeHi      = 0;
       g_lane[i].trendLeftOk  = false;
       g_lane[i].regimeLeftOk = false;
+      g_lane[i].signalAge    = 0;
+      g_lane[i].signalDuraPct = 0;
+      g_lane[i].signalDuraOk  = false;
       g_lane[i].slopeRatio = 0.0;
       g_lane[i].zValue     = 0.0;
       g_lane[i].vMom       = 0;

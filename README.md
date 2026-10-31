@@ -29,7 +29,7 @@ Design decisions and the measurements behind them are recorded in
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
  TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
- M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY 24%   SIGNAL ONLY
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
  M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
@@ -85,18 +85,25 @@ the age, so the AGE column was showing the same thing twice.
 ### REGIME — what kind of market, and how much longer
 
 `Steady 12/45%L` — same two forward numbers, measured on regime runs instead of trend
-runs. `Steady` / `Mixed` / `Choppy` come from the standardised net move over **128
-hours**:
+runs. `Steady` / `Mixed` / `Choppy` come from the standardised net move over **24 hours**:
 
 ```
-z = (close now - close 128h ago) / (sd of bar changes x sqrt(bars in 128h))
+z = (close now - close 24h ago) / (sd of bar changes x sqrt(bars in 24h))
 Steady if |z| >= 2.0    Mixed if |z| >= 1.0    Choppy otherwise
 ```
 
 `z` is `N(0,1)` for a driftless series at *any* window length, which is the only reason
-the three lanes can be compared: M5 reads 1 536 bars, M15 512, M30 256 — all the same
-128 hours. Measured, the three agree 94.5 % of the time on one series. Persistent
-disagreement on a live chart is a bug, not a market condition.
+the three lanes can be compared: M5 reads 288 bars, M15 96, M30 48 — all the same
+24 hours.
+
+**Why 24 hours and not longer.** The first build used 128 hours. That is 1 536 bars on
+M5, so one reading and the next are nearly the same number (autocorrelation 0.98+), and
+the column read `Choppy` on every bar. Lengthening the window does not fix that — at any
+span beyond a day, these markets genuinely do not drift. The variance ratio, the standard
+random-walk test, sits at 0.04–0.36 on crypto pairs where 1.0 is a random walk. At 24
+hours liquid pairs produce roughly 15 / 13 / 70 and the label actually moves.
+
+**On a choppy instrument `Choppy` is the correct answer, not a fault.**
 
 **Regime never blocks a signal.** A valid BUY in Choppy is still shown as BUY.
 
@@ -115,6 +122,23 @@ likely anything is. The votes are never multiplied: keeping them separate is wha
 `2/3` a real, recurring state instead of a binary.
 
 `SIGNAL` is `BUY` at `>= 2`, `SELL` at `<= -2`, otherwise `NO SIGNAL`.
+
+### SIGNAL — direction, and how long it is likely to stay
+
+`BUY 24%` reads: BUY, and a **24 % chance this signal is still standing in 3 bars**.
+No percentage means there is not enough history yet — you get plain `BUY` or `SELL`.
+
+The number is counted from this symbol's own past signals, not from a fixed rule. It
+rises as a signal ages (roughly 17 % at one bar old, 30 % at five), because a signal that
+has already lasted tends to keep lasting.
+
+**Why there is no `L` on it.** In TREND and REGIME, `%L` means *share of life left*. Here
+the percentage answers a different question — will it still be standing — so it is shown
+as a plain percent, and the hover spells it out.
+
+**What it does not mean.** It is not strength, and not a reason to trade. Measured on
+real candles, the signal is no better at predicting direction when the number is high.
+It tells you how long the label is likely to stay lit.
 
 ### TRADE STATUS — two possible values
 
@@ -224,6 +248,9 @@ In the **Experts** tab:
   only 4.9 % of bars below 20 %. It is a warning light near the end, not a countdown.
 - **The answer is wide, not tight.** Run lengths are heavy-tailed, so the cell shows one
   number but the hover gives the interquartile range - often something like "18 to 96 more".
+- **The signal percentage is about duration, not quality.** Median reading is 19 %,
+  and it was calibrated on real candles: predicted 20.1 % against 18.4 % actual in one
+  sample, 22.9 % against 24.4 % in another.
 - **Some bars carry no number.** Coverage grows as history builds: about 70 % of bars in the
   first ~2 000, 85–92 % after that, and effectively 100 % once the 400-run history is full.
   A bare `UP` means not enough past runs got this far; `UP Max` means the run is longer than
@@ -240,8 +267,8 @@ In the **Experts** tab:
 - **Run history is in memory only.** It is rebuilt by replaying 800 closed bars at every
   attach, so the panel is populated immediately, but nothing is written to disk. The last
   400 completed runs per lane are kept; older ones are dropped.
-- **Minimum history per lane.** The terminal must hold **2 339** closed M5 bars, **1 315** M15
-  or **1 252** M30, because the 128-hour regime span and the 800-bar history replay must both
+- **Minimum history per lane.** The terminal must hold **1 089** closed M5 bars, **897** M15
+  or **849** M30, because the 24-hour regime span and the 800-bar history replay must both
   fit. A lane short of that reports `DATA WAIT` and keeps retrying.
 - The session table is the broker's, so a holiday can still read `MARKET OPEN` until the
   quote goes stale.
