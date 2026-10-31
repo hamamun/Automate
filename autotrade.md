@@ -249,6 +249,51 @@ The panel shows `3/3`, `2/3`, `1/3`, `0/3` — **agreement, never a probability*
 Measured on synthetic data during design: a Gaussian random walk reaches 3/3 in roughly a
 third of trials. That is the number to keep in mind whenever the panel looks confident.
 
+### 6.1 "Signal confidence" — what was tested and what was refused
+
+The score is **locked** and does not change. The question asked of it was narrower: can
+anything tell us **how long the current score will last**?
+
+**Conventional indicators were tested and refused.** Nine features — RSI, ADX, ATR ratio,
+Bollinger width, Stochastic, CCI, MACD histogram, plus the run's age and the score itself —
+were put through a logistic model and trained on one era, tested on another.
+
+| Split | score + age | adding indicators |
+|---|---|---|
+| 2018 -> 2025 | AUC 0.624 | AUC 0.657 (helps) |
+| 2025 -> 2018 | AUC 0.663 | AUC 0.653 (hurts) |
+
+The improvement **reverses when the eras are swapped**, so it is noise, not signal. The
+model is also badly calibrated out of sample: the fifth of bars it rated most likely to
+persist came true 35.5 % of the time against a 45.1 % prediction, while the fifth it rated
+least likely came true **more** often than predicted (15.6 % against 8.9 %).
+
+A confidence percentage built on that would be a confident-looking number with no
+foundation. That is the same failure as the 128-hour regime span, caught before shipping.
+
+**What does carry information is the score itself**, counted directly with no model:
+
+| Score | lasts 3 more bars (2018) | (2025) |
+|---|---|---|
+| +3 / -3 | 10.1 % / 10.6 % | 18.4 % / 17.4 % |
+| +2 / -2 | 5.5 % / 5.3 % | 6.7 % / 6.0 % |
+| +1 / -1 | 4.0 % / 3.4 % | 3.5 % / 3.4 % |
+| 0 | 4.3 % | 2.3 % |
+
+The ordering is monotonic and holds in both eras: **an extreme score is the stickiest
+state, a moderate one the least durable.** The level differs by era (roughly 10 % against
+17 % for 3/3), so any display must be coarse.
+
+| Signal | lasts 5 more bars (2018) | (2025) |
+|---|---|---|
+| BUY / SELL | 8.5 % / 9.0 % | 14.1 % / 9.1 % |
+| NO SIGNAL | 37.6 % | 30.8 % |
+
+**Decision:** no indicator-based confidence is built. If a persistence figure is ever
+shown, it comes from counting this table in the EA's own run history - the machinery for
+which already exists - and it belongs in the hover text as a rough band, never as a
+precise percentage on the panel.
+
 ---
 
 ## 7. Regime
@@ -607,6 +652,7 @@ plain. Text always carries the meaning.
 | Multiplied votes | hides which vote disagreed |
 | A regime veto | D5, and it is a separate decision if ever wanted |
 | Self-learning that rewrites the signal | out of scope; the diary stays observational |
+| Indicator-based signal confidence | tested and refused, section 6.1 - the gain reverses when the eras swap |
 
 ---
 
@@ -630,6 +676,12 @@ plain. Text always carries the meaning.
    | remaining-life coverage | 69 % at attach, 85-92 % mid, ~100 % with full history |
    | remaining-life zeros | 0.0 % - the rejected formula gave 64.8 % |
    | widest rendered cell | TREND 12 of 14, REGIME 15 of 16 |
+
+   Persistence study, on real candles (section 6.1): nine conventional indicators failed
+   to improve the score's own durability estimate out of sample - AUC went 0.624 -> 0.657
+   in one direction and 0.663 -> 0.653 in the other - and the fitted model was
+   miscalibrated in the test era. The score value alone separates persistence cleanly:
+   3/3 lasts three more bars about 10 % of the time against 4 % for 1/3.
 
    Both remaining-life estimates are populated on ~99 % of bars, which is what the
    column needs to mean anything. Every score occurs, so `2/3` and `1/3` are real states and the three votes
