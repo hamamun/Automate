@@ -64,8 +64,9 @@ The rule is about **tuning knobs**, not about switches:
 3. the owner asked for it by name, in the chat, before it was written.
 
 Everything else self-configures. Today the EA declares **zero inputs**, and that number
-only changes when the owner asks. The first one expected is the `Tweak` switch discussed
-in section 6.3.
+only changes when the owner asks. Two are on record: `Diary details` (section 11.5),
+which comes with the diary, and `Tweak` (section 6.3), which belongs to the self-tweak
+and is not built.
 
 An input also has a real cost worth stating: changing one restarts the EA and wipes the
 in-memory run history, so its panel is cold for the first minutes. That is another reason
@@ -801,7 +802,8 @@ Four rules, all required:
 Turning the input on or off restarts the EA. The diary file keeps everything, so only the
 in-memory run history goes cold for the first few minutes.
 
-`Diary details` is the second input in the project, and it passes all three tests in
+`Diary details` is the **first** input the project will actually declare; `Tweak` (§6.3)
+is the second, and it arrives only with the self-tweak. It passes all three tests in
 §2.1: leaving it at `false` is never wrong, it switches a view rather than defining a
 measurement, and the owner asked for it by name.
 
