@@ -40,9 +40,36 @@ and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trad
 | D3 | No forward prediction of "the bar it changes" | No tool can do this. See section 8. |
 | D4 | Votes stay **separate and visible**, never multiplied together | `v1 × v2 × v3` collapses to binary and hides which vote disagreed, which is the most useful diagnostic available. |
 | D5 | The regime label **never vetoes** a signal | Per `automate.md`. It is context. If it ever gains teeth that is a separate, explicit decision. |
-| D6 | No user inputs, including for stage 2 | Constants are internal candidates, documented in section 9. |
+| D6 | **No per-item inputs.** A small set of technical inputs is allowed, but only ones the owner asks for by name | Every window, band, threshold and period self-configures, so there is never an input per indicator. The few inputs that do exist are switches and limits, not tuning knobs - see 2.1. Today the EA declares **none**. |
 | D7 | Trend = **regression slope over 30 bars**, in units of a typical bar | Measured, not argued: it beats both Kalman and the Ehlers bandpass on every test in section 10.4. |
 | D8 | Everything is **causal** — closed bars only, no future-smoothed values | A number on screen must never be built from a bar that had not finished. |
+
+### 2.1 What the input rule actually means
+
+Earlier drafts of this section said "no inputs at all". That was too strong, and wrong.
+
+The rule is about **tuning knobs**, not about switches:
+
+| Not allowed | Allowed |
+|---|---|
+| a period for each indicator | one switch that arms a bounded self-tweak |
+| a band per timeframe | a cap on how far a self-tweak may move a value |
+| a threshold the user is expected to optimise | a display toggle |
+| anything that must be set correctly before the EA behaves | anything safe to leave at its default forever |
+
+**A permitted input must satisfy all three:**
+
+1. the default is the correct setting for a new user - leaving it alone is never wrong;
+2. it switches or bounds behaviour, it does not define a measurement;
+3. the owner asked for it by name, in the chat, before it was written.
+
+Everything else self-configures. Today the EA declares **zero inputs**, and that number
+only changes when the owner asks. The first one expected is the `Tweak` switch discussed
+in section 6.3.
+
+An input also has a real cost worth stating: changing one restarts the EA and wipes the
+in-memory run history, so its panel is cold for the first minutes. That is another reason
+to keep the count near zero.
 
 ---
 
@@ -341,6 +368,40 @@ next move but not its direction, and no confidence number changes that.
 
 ---
 
+### 6.3 The armed self-tweak - proposed, not built
+
+The owner's design, recorded here so it can be reviewed before any code exists.
+
+The EA never changes a constant on its own. Instead it **raises a check**, and a person
+arms the change:
+
+```
+1. diary finds a problem        -> panel:  Check: Cost Watch
+2. owner sets Tweak = true      -> EA applies ONE bounded change
+3. panel confirms               -> Tweak done: gate 1.4 -> 1.6
+4. owner sets Tweak = false     -> EA keeps the new value, resumes watching
+```
+
+Four rules make it safe, and all four are required:
+
+| Rule | Why |
+|---|---|
+| **One change per arming** | a forgotten switch cannot turn into permanent self-tuning |
+| **Bounded range and a small step** | `1.4 -> 1.6`, never `1.4 -> 5`; the cap is internal and not an input |
+| **The new value is written to the diary file** | changing an input restarts the EA and rebuilds run history in memory; without persistence the tweak would silently vanish |
+| **Logged with a before and after row** | the diary must show what the EA was like before the change, not only after |
+
+This is the one place a user input is expected (§2.1). It is a switch, it is safe to leave
+`false` forever, and it was requested by the owner rather than invented here.
+
+**The honest risk, stated once.** A tweak is chosen by looking at past data. That exact
+method failed in this project already: a model fitted on 2018 scored worse than useless on
+2025, with coefficients that changed sign. Bounded steps limit the damage; they do not
+make the direction of a tweak reliable. The first few should be treated as experiments,
+with the before/after visible in the diary.
+
+---
+
 ## 7. Regime
 
 ```
@@ -470,7 +531,7 @@ the single number; the spread lives one hover away.
 Panel cell: `6/11` = this state is 6 bars old, the median completed run was 11.
 
 This answers the user's question — *how long will it last, how unusual is this* — from the
-symbol's own history, with no inputs and no pretence of knowing the switch bar. It also
+symbol's own history, with no tuning knobs and no pretence of knowing the switch bar. It also
 self-adapts per symbol and per lane, because it is measured, not configured.
 
 States tracked:
@@ -514,8 +575,9 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
 
-None of these is a user input (D6). Each is a starting candidate to be replaced only by a
-measurement.
+None of these is a user input (D6, 2.1) - they are internal and not exposed. Each is a
+starting candidate to be replaced only by a measurement, never by a user's opinion at
+first run.
 
 **Why `MOVE_BAND_X` is 0.50 and not 0.10.** The earlier draft used
 `max(1 tick, 0.10 x med)`. But `med` is the size of a *one-bar* move, while the momentum

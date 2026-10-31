@@ -4,7 +4,11 @@
 **It still cannot trade.** No orders, no positions, no stops, no lot size, no diary — the
 panel says `SIGNAL ONLY` so this can never be mistaken for a trading build.
 
-There are **no inputs**. Attach it and it works everything out on its own.
+There are **no inputs to set up**. Attach it and it works everything out on its own.
+
+A small number of technical switches may be added later — but only ones the owner asks for
+by name, and only ones that are safe to leave at their default forever. No indicator period,
+band or threshold is ever an input.
 
 | Stage | State | What it added |
 |---|---|---|
