@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|  Automate.mq5                                                    |
 //|                                                                  |
-//|  STAGE 2 - self-discovery, market status and the signal engine.  |
+//|  STAGE 3 - entry, stop, target, size and the trade table.        |
 //|                                                                  |
 //|  What this build does:                                           |
 //|    * reads the attached chart symbol and everything the broker   |
@@ -16,26 +16,35 @@
 //|      session (Tokyo / London / New York) when real UTC can be    |
 //|      established honestly;                                       |
 //|    * measures M5, M15 and M30 independently on closed bars and   |
-//|      reports TREND, the age of that trend, REGIME, a three-vote  |
-//|      SCORE and a SIGNAL.                                         |
+//|      reports TREND, REGIME, a three-vote SCORE and a SIGNAL,     |
+//|      each with a forward horizon taken from that lane's own      |
+//|      completed runs;                                             |
+//|    * plans one trade per lane from that lane's own structure: a  |
+//|      market entry at 3/3, or a limit resting on the nearest      |
+//|      confirmed swing at 2/3; a stop behind confirmed structure;  |
+//|      and one target measured by replaying the same setup over    |
+//|      the lane's history. No structure, no trade - the panel      |
+//|      says which piece was missing;                               |
+//|    * sizes the plan from equity and the stop distance, rounded   |
+//|      down, after checking the broker's lot and margin limits;    |
+//|    * records what the panel claimed in an observational diary.   |
 //|                                                                  |
-//|  What this build deliberately does NOT do yet:                   |
-//|    * no entries, stops, targets, lot size and no orders. The     |
-//|      panel says SIGNAL ONLY so this can never be mistaken for a  |
-//|      trading build. That is stage 3 and later.                   |
-//|    * the diary records what the panel CLAIMED and checks it      |
-//|      later. It never sends anything to the broker and nothing    |
-//|      it stores is read back by the signal engine.                |
+//|  TRADING IS OFF.                                                 |
+//|    TRADING_LIVE is a compile-time constant and it is false. The  |
+//|    plan is still built, sized and shown - STATE reads PLAN - but |
+//|    the gate sits immediately before OrderSend and nothing        |
+//|    reaches the broker. Turning it on has to be a deliberate act: |
+//|    change that one word and recompile.                           |
 //|                                                                  |
-//|  Two switches, both off by default and both safe to leave off:   |
-//|  one opens the diary details panel, the other is the tweak       |
-//|  switch, which does nothing at all until a check exists.         |
+//|  Three switches, all off by default and all safe to leave off:   |
+//|  diary details, the tweak switch (nothing to tweak yet) and      |
+//|  minimum lot (clamp a size up instead of refusing the trade).    |
 //|  Everything else is discovered or measured.                      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
 #property version   "1.30"
-#property description "Automate stage 2: self-discovery, automatic configuration, market and session status, trend / regime / score / signal per timeframe, and an observational diary."
-#property description "Two switches, both off by default. Sends no orders. Attach to any chart and timeframe."
+#property description "Automate stage 3: self-discovery, market and session status, trend / regime / score / signal per timeframe, and a planned trade per timeframe - entry, stop, target and size."
+#property description "Three switches, all off by default. Trading is off at compile time, so no order can be sent. Attach to any chart and timeframe."
 
 //==================================================================
 //  INTERNAL CONSTANTS  (deliberately not inputs)
@@ -2070,8 +2079,8 @@ void LogLanes()
 struct DiaryTotals
 {
    int sToday;   // signal runs checked today
-   int wToday;   // trades won - no writer until stage 3
-   int lToday;   // trades lost - no writer until stage 3
+   int wToday;   // trades won - no writer yet
+   int lToday;   // trades lost - no writer yet
    int sAll;
    int wAll;
    int lAll;
@@ -3363,11 +3372,12 @@ void TradeHeaderRow()
 //  PANEL
 //==================================================================
 //  The layout follows the interface sketch in automate.md section 7.
-//  Group 1 is the lane table, group 2 is the trade plan and is still
-//  blank, group 3 is the diary.  Fields whose data does not exist yet -
-//  the selected plan and exposure - are drawn as labels with blank
-//  values.  The frame is the same from stage to stage; only the values
-//  fill in as each stage is built.
+//  Group 1 is the lane table, group 2 is one trade row per lane and
+//  group 3 is the diary.  All three groups are always drawn: a row of
+//  dashes says plainly that nothing is happening on that lane, which is
+//  easier to read than a panel that changes height.  The frame is the
+//  same from stage to stage; only the values fill in as each stage is
+//  built.
 //
 //  A line is either plain or made of coloured segments, so the market
 //  state can be red or green while the session and spread on the same
@@ -3718,9 +3728,9 @@ void BuildPanel()
    // ---------------------------------------------------------------
    string tS = "How many signal runs the diary has checked. Each run is "
                "counted once, 3 bars after the panel first put a figure on it.";
-   string tW = "Wins. Always zero until this build can place trades: the "
-               "diary checks what the panel said, not trades.";
-   string tL = "Losses. Always zero until this build can place trades.";
+   string tW = "Wins. Zero until filled trades are graded: the diary "
+               "checks what the panel said, not trades.";
+   string tL = "Losses. Zero until filled trades are graded.";
 
    color cS = (g_diaryOk ? CLR_VALUE : CLR_DIM);
 

@@ -1,15 +1,16 @@
-# Autotrade — stage 2 design record
+# Autotrade — design record
 
-**Status: design record, updated after measurement. Stage 2 is implemented.**
+**Status: design record, updated after measurement. Stages 1 to 3 are implemented.**
 
 This file records the decisions taken while planning stage 2 (trend, regime, score,
-signal) and the reasoning behind each one. It sits alongside `automate.md`, which remains
+signal) and stage 3 (entry, stop, target, size), and the reasoning behind each one. It sits alongside `automate.md`, which remains
 the original plan. Where this file differs from `automate.md`, this file is the later
 decision and says why.
 
 Stage 1 (discovery, self-configuration, market and session status) is built, merged and
-verified in MetaEditor with 0 errors. Stage 2 is built in the same file; the panel now
-carries TREND, REGIME, SCORE and SIGNAL.
+verified in MetaEditor with 0 errors. Stage 2 is built in the same file and carries TREND,
+REGIME, SCORE and SIGNAL. Stage 3 adds the plan: one entry, stop, target and size per
+lane, with trading off at compile time.
 
 Sections 5, 7, 9 and 10 were rewritten after the trend filter was measured rather than
 argued about. What changed and why is in section 10.4 - the short version is that the
@@ -20,14 +21,16 @@ from a regression slope and the bandpass is kept as a logged comparison.
 
 ## 1. Scope
 
-**In stage 2:** per lane, on each closed bar of its own timeframe:
+**Built:** per lane, on each closed bar of its own timeframe:
 
 - a trend direction and how long it has been in that direction
 - a regime label and how long *it* has lasted
 - three independent votes, a score, and a signed signal
+- one planned trade - entry, stop, a single target, size - and the rules that cancel it
 
-**Not in stage 2:** entries, stops, targets, lot size, orders, the diary. Those are stage 3
-and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trading build.
+**Not built:** trailing stop, TP1/TP2, partial closes, live sending, and grading filled
+trades in the diary. The plan is built and shown; `TRADING_LIVE` is false, so no order can
+reach the broker.
 
 ---
 
@@ -556,8 +559,9 @@ other forward number available - Ehlers' rate of change - is a coin flip. Drawin
 from either would be decoration.
 
 What is kept is the honest one: the current run against its own history. That answers
-*how long has this lasted and how unusual is that* without claiming to know the date. A
-cone comes back in stage 3, where there is a target for it to be measured against.
+*how long has this lasted and how unusual is that* without claiming to know the date.
+Stage 3 sets one target from the setup's own replay instead of drawing a cone to it, and
+claims no path along the way.
 
 ---
 
@@ -677,23 +681,6 @@ panel reports duration-so-far, not duration-remaining.
 AGE is gone. TREND and REGIME each carry the forward number instead, so one row
 answers the only question worth asking of a live panel: **how much longer**.
 
-```text
- AUTOMATE    XAUUSDm  |  Metal  |  Hedging
- MARKET OPEN | Session: London | Spread: 240.0 pts
-
- TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
- M5     UP 6/30%L     Steady 12/45%L  3/3    BUY 24%   SIGNAL ONLY
- M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
- M30    DOWN Max     Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
-
- Selected:                    Entry:
- SL:                          TP:
- Entry timing:                TP estimate:
- Size:                         Planned risk:
- Combined exposure:
- Diary:                        Unknown future costs:
-```
-
 The panel is built in three groups. All three are always visible: a row that reads
 `--` is a statement that nothing is happening on that lane, and a panel that changes
 height every few minutes is harder to read than one that does not.
@@ -720,7 +707,8 @@ height every few minutes is harder to read than one that does not.
 **TRADE STATUS is gone from group 1.** It used to say `SIGNAL ONLY` on every row, which
 was true when nothing was sent. Now that each lane has a plan, the state lives on that
 lane's group-2 row - `OPEN`, `WAIT`, `PLAN`, `HOLD`, `--` - and a second copy up here
-would be the same fact twice. The panel is 66 characters wide, set by group 2.
+would be the same fact twice. The fixed tables are 55 characters (group 1) and 65
+(group 2), so group 2 sets the width.
 
 ### 11.1 The diary line
 
@@ -733,8 +721,8 @@ still 60 characters, inside the 67-character table.
 3 bars after the panel first put a durability figure on it - because consecutive claims
 from the same run overlap and would count the same evidence twice.
 
-**W and L mean trades, and nothing else.** Until entry exists there are no trades, so
-both print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
+**W and L mean trades, and nothing else.** Filled trades are not graded yet, so both
+print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
 a letter that changes meaning halfway through a file is a letter that cannot be trusted.
 Claim quality - whether our own durability and life figures were honest - is read in the
 details panel (§11.5), which is what it is for.
@@ -772,7 +760,8 @@ The panel carries no legend, by request. Each cell explains itself on hover:
 | REGIME cell | "M5 regime Steady. About 12 more bars (1 h). 45% of its life left - ..." |
 | SCORE cell | "2 of 3 votes agree. Trend 1, momentum 1, structure 0." |
 | SIGNAL cell | "BUY or SELL needs 2 of the 3 votes to agree." |
-| TRADE STATUS | "Nothing is sent to the broker in this build." |
+| trade row STATE | "A plan is ready but trading is off, so nothing was sent to the broker." |
+| trade row STATE, HOLD | "No plan: <the reason>." |
 
 The SIGNAL hover reads: *"SELL has stood for 2 bars. Of the past SELL runs on this symbol
 that reached this age, 22% were still standing 3 bars later. Counted from this symbol's
@@ -787,8 +776,9 @@ plainly instead of inventing a number:
 > "M5 trend UP has already run 121 bars - longer than any run in its history
 > (longest 118). No honest estimate of what is left."
 
-Colour: TREND and SIGNAL carry direction colour; REGIME, SCORE and TRADE STATUS are
-plain. Text always carries the meaning.
+Colour: TREND, SIGNAL and the trade DIR carry direction colour; SL is red and TP lime; and
+STATE carries its own - lime `OPEN`, orange `WAIT`, light blue `PLAN`, dim `HOLD`. Text
+always carries the meaning.
 
 ---
 
@@ -892,8 +882,8 @@ the estimate, so alignment cannot break.
    The 63.4 % signal rate looks high and is: this series spends half its life in a strong
    drift, and three votes measuring recent direction agree in a drift. On pure noise the
    same engine fires on about 47 % of bars. That is the correct behaviour for an agreement
-   count at a 2-of-3 threshold, and it is exactly why the panel says `SIGNAL ONLY` rather
-   than implying an edge.
+   count at a 2-of-3 threshold, and it is exactly why a row shows a score and a state rather
+   than an implied edge.
 5. On the live chart: M5/M15/M30 regime labels should usually agree, because they now
    measure the same span. Persistent disagreement is a bug, not a market condition.
 6. Confirm in the Experts log that the lanes report `DATA WAIT` on a symbol with shallow
@@ -951,9 +941,9 @@ parse is skipped - it is never repaired and never used to rewrite anything.
 
 ### 15.4 What it never does
 
-No orders, no stops, no targets, no size. Nothing it stores is read back by the signal
-engine. The counters it displays are the same counters it wrote, so the panel and the
-file can never disagree.
+The diary places nothing - no orders, no stops, no targets, no size. Nothing it stores is
+read back by the signal engine. The counters it displays are the same counters it wrote,
+so the panel and the file can never disagree.
 
 ### 15.5 Honest limits
 
@@ -961,7 +951,7 @@ file can never disagree.
   is never lost. At most one claim per lane is affected.
 - **Regime claims are rare.** A regime run can last a day, so `REG` lines arrive slowly.
   That is the run being long, not the diary being broken.
-- **`W` and `L` stay zero.** There are no trades, so there is nothing to win or lose.
-  They are not repurposed to mean held and failed - see section 11.1.
+- **`W` and `L` stay zero.** Filled trades are not graded yet, so there is nothing to win
+  or lose. They are not repurposed to mean held and failed - see section 11.1.
 - **Small samples look decisive.** `DIARY_MIN_JUDGE` hides a comparison below 10 results
   rather than printing a percentage built from three.
