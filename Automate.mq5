@@ -20,22 +20,27 @@
 //|      SCORE and a SIGNAL.                                         |
 //|                                                                  |
 //|  What this build deliberately does NOT do yet:                   |
-//|    * no entries, stops, targets, lot size, orders, no diary.     |
-//|      The panel says SIGNAL ONLY so this can never be mistaken    |
-//|      for a trading build. That is stage 3 and later.             |
+//|    * no entries, stops, targets, lot size and no orders. The     |
+//|      panel says SIGNAL ONLY so this can never be mistaken for a  |
+//|      trading build. That is stage 3 and later.                   |
+//|    * the diary records what the panel CLAIMED and checks it      |
+//|      later. It never sends anything to the broker and nothing    |
+//|      it stores is read back by the signal engine.                |
 //|                                                                  |
-//|  There are NO user inputs. Everything above is discovered or     |
-//|  measured; nothing needs to be typed in.                         |
+//|  Two switches, both off by default and both safe to leave off:   |
+//|  one opens the diary details panel, the other is the tweak       |
+//|  switch, which does nothing at all until a check exists.         |
+//|  Everything else is discovered or measured.                      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.10"
-#property description "Automate stage 2: self-discovery, automatic configuration, market and session status, trend / regime / score / signal per timeframe."
-#property description "No inputs. Sends no orders. Attach to any chart and timeframe."
+#property version   "1.20"
+#property description "Automate stage 2: self-discovery, automatic configuration, market and session status, trend / regime / score / signal per timeframe, and an observational diary."
+#property description "Two switches, both off by default. Sends no orders. Attach to any chart and timeframe."
 
 //==================================================================
 //  INTERNAL CONSTANTS  (deliberately not inputs)
 //==================================================================
-#define EA_STAGE            "stage 2 - signal engine"
+#define EA_STAGE            "stage 2 - signal engine and diary"
 #define PANEL_PREFIX        "AUT_"
 #define PANEL_X             10
 #define PANEL_Y             20
@@ -98,6 +103,15 @@ const color CLR_OK      = clrLime;
 const color CLR_HOLD    = clrOrange;
 const color CLR_ALERT   = clrRed;
 const color CLR_DIM     = C'150,150,150';
+
+//==================================================================
+//  INPUTS
+//==================================================================
+//  Two, both switches, both false by default.  Neither defines a
+//  measurement and neither has to be set correctly: leaving both off
+//  is a complete, correct configuration.  See autotrade.md 2.1.
+input bool InpDiaryDetails = false;   // Diary details
+input bool InpTweakArm     = false;   // Tweak (arm one self-tweak)
 
 //  Array indices for the classifier.  Plain integers on purpose: the
 //  scoring code stays readable and free of enum/int conversions.
@@ -1873,6 +1887,10 @@ bool UpdateLane(int idx)
                                            g_lane[idx].regimeHi);
 
    g_lane[idx].ready = true;
+
+   //  One line of the diary is settled here, after the panel numbers
+   //  exist for this bar.  It reads them; it can never change them.
+   DiaryOnBar(idx);
    return(true);
 }
 
@@ -1992,13 +2010,573 @@ void LogLanes()
 }
 
 //==================================================================
+//  DIARY
+//==================================================================
+//  The diary records what the panel claimed, and checks it later.
+//  One line is written when a claim is settled.  Nothing else is
+//  ever written, and nothing it stores is read back by the signal
+//  engine: a witness, not a participant.
+//
+//  Three claim kinds:
+//     SIG   a BUY or SELL was shown with a durability figure
+//     TRD   a trend run was shown with a total life
+//     REG   a regime run was shown with a total life
+//
+//  A claim starts only when the panel actually showed a number, so
+//  nothing is ever graded that was never said.  Pending claims live
+//  in memory only: a restart loses the claim in flight, but never a
+//  line that was already written.
+#define DIARY_MAX_RECENT  8     // results listed in the details panel
+#define DIARY_BLK_W       15    // fixed width of one S/W/L block
+#define DIARY_MIN_JUDGE   10    // results needed before a comparison shows
+#define DIARY_GAP         12    // px between the two panels
+#define DIARY_PREFIX      "AUTD_"
+#define DIARY_KIND_SIG    "SIG"
+#define DIARY_KIND_TRD    "TRD"
+#define DIARY_KIND_REG    "REG"
+
+struct DiaryTotals
+{
+   int sToday;   // signal runs checked today
+   int wToday;   // trades won - no writer until stage 3
+   int lToday;   // trades lost - no writer until stage 3
+   int sAll;
+   int wAll;
+   int lAll;
+};
+
+struct DiaryCalib
+{
+   int    sigN;      // signals checked
+   double sigSaid;   // what the panel said, summed
+   int    sigHeld;   // how many were still standing
+   int    trdN;
+   double trdSaid;
+   double trdDid;
+   int    regN;
+   double regSaid;
+   double regDid;
+};
+
+struct DiaryPending
+{
+   bool     sigOn;
+   bool     sigDone;      // this run has already been claimed once
+   int      sigDir;
+   int      sigPct;
+   datetime sigBar;
+   bool     trdOn;
+   int      trdSaid;
+   bool     regOn;
+   int      regSaid;
+};
+
+struct DiaryResult
+{
+   string lane;
+   string said;
+   string did;
+   bool   hit;
+};
+
+DiaryTotals  g_dt[LANE_COUNT];
+DiaryCalib   g_dc;
+DiaryPending g_dp[LANE_COUNT];
+DiaryResult  g_dr[DIARY_MAX_RECENT];
+int          g_drAt      = 0;      // next slot in the ring
+int          g_drN       = 0;      // entries used
+int          g_diary     = INVALID_HANDLE;
+string       g_diaryName = "";
+string       g_diaryNote = "not started";
+bool         g_diaryOk   = false;
+int          g_diaryRows = 0;
+datetime     g_diaryDay  = 0;
+int          g_panelPx   = 0;      // main panel geometry, for the side panel
+int          g_panelPy   = 0;
+
+//------------------------------------------------------------------
+//  File
+//------------------------------------------------------------------
+string DiaryFileName()
+{
+   string acct = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
+   string sym  = _Symbol;
+   StringReplace(sym, "\\", "_");
+   StringReplace(sym, "/",  "_");
+   StringReplace(sym, ":",  "_");
+   StringReplace(sym, "*",  "_");
+   StringReplace(sym, "?",  "_");
+   StringReplace(sym, "<",  "_");
+   StringReplace(sym, ">",  "_");
+   StringReplace(sym, "|",  "_");
+   StringReplace(sym, ".",  "_");
+   return("Automate_Diary_" + acct + "_" + sym + ".csv");
+}
+
+datetime DiaryDayKey(datetime t)
+{
+   MqlDateTime s;
+   TimeToStruct(t, s);
+   s.hour = 0;
+   s.min  = 0;
+   s.sec  = 0;
+   return(StructToTime(s));
+}
+
+void DiaryReset()
+{
+   g_dc.sigN    = 0;
+   g_dc.sigSaid = 0.0;
+   g_dc.sigHeld = 0;
+   g_dc.trdN    = 0;
+   g_dc.trdSaid = 0.0;
+   g_dc.trdDid  = 0.0;
+   g_dc.regN    = 0;
+   g_dc.regSaid = 0.0;
+   g_dc.regDid  = 0.0;
+
+   g_drAt      = 0;
+   g_drN       = 0;
+   g_diaryDay  = 0;
+   g_diaryRows = 0;
+
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      g_dt[i].sToday = 0;
+      g_dt[i].wToday = 0;
+      g_dt[i].lToday = 0;
+      g_dt[i].sAll   = 0;
+      g_dt[i].wAll   = 0;
+      g_dt[i].lAll   = 0;
+
+      g_dp[i].sigOn   = false;
+      g_dp[i].sigDone = false;
+      g_dp[i].sigDir  = 0;
+      g_dp[i].sigPct  = 0;
+      g_dp[i].sigBar  = 0;
+      g_dp[i].trdOn   = false;
+      g_dp[i].trdSaid = 0;
+      g_dp[i].regOn   = false;
+      g_dp[i].regSaid = 0;
+   }
+   for(int i = 0; i < DIARY_MAX_RECENT; i++)
+   {
+      g_dr[i].lane = "";
+      g_dr[i].said = "";
+      g_dr[i].did  = "";
+      g_dr[i].hit  = false;
+   }
+}
+
+void DiaryApply(int lane, string kind, int said, int did, bool hit, datetime t)
+{
+   if(lane < 0 || lane >= LANE_COUNT) return;
+
+   bool today = (g_diaryDay != 0 && DiaryDayKey(t) == g_diaryDay);
+
+   if(kind == DIARY_KIND_SIG)
+   {
+      g_dt[lane].sAll++;
+      g_dc.sigN++;
+      g_dc.sigSaid += (double)said;
+      if(hit) g_dc.sigHeld++;
+
+      if(today) g_dt[lane].sToday++;
+   }
+   else if(kind == DIARY_KIND_TRD)
+   {
+      g_dc.trdN++;
+      g_dc.trdSaid += (double)said;
+      g_dc.trdDid  += (double)did;
+   }
+   else if(kind == DIARY_KIND_REG)
+   {
+      g_dc.regN++;
+      g_dc.regSaid += (double)said;
+      g_dc.regDid  += (double)did;
+   }
+}
+
+//  Newest entry lands at g_drAt, which then moves on.  Display walks
+//  the ring backwards from there.
+void DiaryPushResult(string lane, string said, string did, bool hit)
+{
+   g_dr[g_drAt].lane = lane;
+   g_dr[g_drAt].said = said;
+   g_dr[g_drAt].did  = did;
+   g_dr[g_drAt].hit  = hit;
+
+   g_drAt = (g_drAt + 1) % DIARY_MAX_RECENT;
+   if(g_drN < DIARY_MAX_RECENT) g_drN++;
+}
+
+void DiaryWrite(int lane, string kind, int said, int did, bool hit, datetime t)
+{
+   if(g_diary == INVALID_HANDLE) return;
+
+   string row = TimeToString(t, TIME_DATE | TIME_MINUTES) + "," +
+                g_lane[lane].name + "," + kind + "," +
+                IntegerToString(said) + "," + IntegerToString(did) + "," +
+                (hit ? "1" : "0") + "\r\n";
+
+   uint wrote = FileWriteString(g_diary, row);
+   if(wrote == 0)
+   {
+      g_diaryNote = "last write failed";
+      PrintFormat("Diary: write failed on %s (error %d)", g_diaryName, GetLastError());
+      return;
+   }
+   FileFlush(g_diary);
+   g_diaryRows++;
+}
+
+void DiaryRecord(int lane, string kind, int said, int did, bool hit,
+                 string saidTxt, string didTxt, datetime t)
+{
+   DiaryApply(lane, kind, said, did, hit, t);
+   DiaryPushResult(g_lane[lane].name, saidTxt, didTxt, hit);
+   DiaryWrite(lane, kind, said, did, hit, t);
+}
+
+//  One stored line.  A line that does not parse is skipped, never
+//  repaired and never used to overwrite anything: the file is only
+//  ever appended to.
+bool DiaryParse(string line)
+{
+   string parts[];
+   ushort sep = StringGetCharacter(",", 0);
+   int n = StringSplit(line, sep, parts);
+   if(n < 6) return(false);
+
+   int lane = -1;
+   for(int i = 0; i < LANE_COUNT; i++)
+      if(parts[1] == g_lane[i].name) lane = i;
+   if(lane < 0) return(false);
+
+   if(parts[2] != DIARY_KIND_SIG &&
+      parts[2] != DIARY_KIND_TRD &&
+      parts[2] != DIARY_KIND_REG) return(false);
+
+   datetime t = StringToTime(parts[0]);
+   if(t == 0) return(false);
+
+   int  said = (int)StringToInteger(parts[3]);
+   int  did  = (int)StringToInteger(parts[4]);
+   bool hit  = (parts[5] == "1");
+
+   DiaryApply(lane, parts[2], said, did, hit, t);
+   DiaryPushResult(g_lane[lane].name,
+                   (parts[2] == DIARY_KIND_SIG ? StringFormat("signal %d%%", said)
+                                               : StringFormat("%d bars", said)),
+                   (parts[2] == DIARY_KIND_SIG ? (hit ? "still there" : "gone")
+                                               : StringFormat("%d bars", did)),
+                   hit);
+   return(true);
+}
+
+bool DiaryOpen()
+{
+   DiaryReset();
+   g_diaryName = DiaryFileName();
+
+   uint flags = FILE_READ | FILE_WRITE | FILE_TXT;
+   if(!MQLInfoInteger(MQL_TESTER)) flags |= FILE_COMMON;
+
+   //  No share flags: the handle is exclusive for the life of the EA,
+   //  so a second chart on the same symbol cannot write to the file.
+   g_diary = FileOpen(g_diaryName, flags);
+   if(g_diary == INVALID_HANDLE)
+   {
+      g_diaryOk   = false;
+      g_diaryNote = "cannot open the file";
+      PrintFormat("Diary: cannot open %s (error %d). Another chart may already hold it.",
+                  g_diaryName, GetLastError());
+      return(false);
+   }
+
+   g_diaryDay = DiaryDayKey(TimeCurrent());
+
+   int rows = 0;
+   while(!FileIsEnding(g_diary))
+   {
+      string line = FileReadString(g_diary);
+      if(StringLen(line) == 0) continue;
+      if(StringSubstr(line, 0, 1) == "#") continue;
+      if(DiaryParse(line)) rows++;
+   }
+   g_diaryRows = rows;
+
+   FileSeek(g_diary, 0, SEEK_END);
+
+   if(rows == 0)
+   {
+      string head = "# Automate diary v1 - one line per settled claim\r\n";
+      FileWriteString(g_diary, head);
+      FileFlush(g_diary);
+   }
+
+   g_diaryOk   = true;
+   g_diaryNote = "saved";
+   PrintFormat("Diary: %s, %d results", g_diaryName, rows);
+   return(true);
+}
+
+void DiaryClose()
+{
+   if(g_diary != INVALID_HANDLE)
+   {
+      FileClose(g_diary);
+      g_diary = INVALID_HANDLE;
+   }
+}
+
+//------------------------------------------------------------------
+//  One closed bar: settle what is due, then open new claims
+//------------------------------------------------------------------
+void DiarySignalStep(int idx, datetime bar)
+{
+   int sig = g_lane[idx].signal;
+
+   //  One claim per run, not one every SIGNAL_DURA_BARS: consecutive
+   //  claims from the same run overlap and would inflate the count
+   //  with the same evidence.
+   if(g_lane[idx].signalAge <= 1) g_dp[idx].sigDone = false;
+
+   if(g_dp[idx].sigOn)
+   {
+      long elapsed = (long)(bar - g_dp[idx].sigBar);
+      long need    = (long)SIGNAL_DURA_BARS * (long)PeriodSeconds(g_lane[idx].tf);
+      if(elapsed >= need)
+      {
+         bool held = (sig == g_dp[idx].sigDir);
+         DiaryRecord(idx, DIARY_KIND_SIG, g_dp[idx].sigPct, (held ? 1 : 0), held,
+                     StringFormat("%s %d%%", SignalText(g_dp[idx].sigDir), g_dp[idx].sigPct),
+                     (held ? "still there" : "gone"),
+                     bar);
+         g_dp[idx].sigOn = false;
+      }
+   }
+
+   if(!g_dp[idx].sigOn && !g_dp[idx].sigDone && sig != 0 && g_lane[idx].signalDuraOk)
+   {
+      g_dp[idx].sigOn   = true;
+      g_dp[idx].sigDone = true;
+      g_dp[idx].sigDir  = sig;
+      g_dp[idx].sigPct  = g_lane[idx].signalDuraPct;
+      g_dp[idx].sigBar  = bar;
+   }
+}
+
+//  which: 0 = trend, 1 = regime
+void DiaryRunStep(int idx, int which, datetime bar)
+{
+   int  ch   = idx * 3 + which;
+   int  age  = (which == 0) ? g_lane[idx].trendAge     : g_lane[idx].regimeAge;
+   int  left = (which == 0) ? g_lane[idx].trendLeft    : g_lane[idx].regimeLeft;
+   bool ok   = (which == 0) ? g_lane[idx].trendLeftOk  : g_lane[idx].regimeLeftOk;
+   bool on   = (which == 0) ? g_dp[idx].trdOn          : g_dp[idx].regOn;
+   int  said = (which == 0) ? g_dp[idx].trdSaid        : g_dp[idx].regSaid;
+
+   //  age == 1 means the previous run has just ended, and its final
+   //  length is the newest entry in that channel's history.
+   if(on && age == 1)
+   {
+      if(g_runCount[ch] > 0)
+      {
+         int done = g_runHist[ch * AGE_HISTORY + g_runCount[ch] - 1];
+         if(done > 0)
+         {
+            int  tol   = (int)MathMax(2, said / 4);
+            bool close = (done >= said - tol && done <= said + tol);
+            DiaryRecord(idx, (which == 0 ? DIARY_KIND_TRD : DIARY_KIND_REG),
+                        said, done, close,
+                        StringFormat("%d bars", said),
+                        StringFormat("%d bars", done), bar);
+         }
+      }
+      if(which == 0) g_dp[idx].trdOn = false;
+      else           g_dp[idx].regOn = false;
+      on = false;
+   }
+
+   //  The first bar of a run at which the panel can honestly say how
+   //  long it lasts.  Before that there is no number, so no claim.
+   if(!on && age > 1 && ok)
+   {
+      if(which == 0)
+      {
+         g_dp[idx].trdOn   = true;
+         g_dp[idx].trdSaid = age + left;
+      }
+      else
+      {
+         g_dp[idx].regOn   = true;
+         g_dp[idx].regSaid = age + left;
+      }
+   }
+}
+
+void DiaryOnBar(int idx)
+{
+   if(!g_diaryOk) return;
+
+   datetime bar = iTime(_Symbol, g_lane[idx].tf, 1);
+   if(bar == 0) return;
+
+   datetime dk = DiaryDayKey(bar);
+   if(g_diaryDay == 0) g_diaryDay = dk;
+   else if(dk > g_diaryDay)
+   {
+      g_diaryDay = dk;
+      for(int i = 0; i < LANE_COUNT; i++)
+      {
+         g_dt[i].sToday = 0;
+         g_dt[i].wToday = 0;
+         g_dt[i].lToday = 0;
+      }
+   }
+
+   DiarySignalStep(idx, bar);
+   DiaryRunStep(idx, 0, bar);
+   DiaryRunStep(idx, 1, bar);
+}
+
+//------------------------------------------------------------------
+//  Panel text
+//------------------------------------------------------------------
+string Slash3(int a, int b, int c)
+{
+   return(IntegerToString(a) + "/" + IntegerToString(b) + "/" + IntegerToString(c));
+}
+
+string DiaryS(bool today)
+{
+   return("S" + Slash3(today ? g_dt[0].sToday : g_dt[0].sAll,
+                       today ? g_dt[1].sToday : g_dt[1].sAll,
+                       today ? g_dt[2].sToday : g_dt[2].sAll));
+}
+
+string DiaryW(bool today)
+{
+   return("W" + Slash3(today ? g_dt[0].wToday : g_dt[0].wAll,
+                       today ? g_dt[1].wToday : g_dt[1].wAll,
+                       today ? g_dt[2].wToday : g_dt[2].wAll));
+}
+
+string DiaryL(bool today)
+{
+   return("L" + Slash3(today ? g_dt[0].lToday : g_dt[0].lAll,
+                       today ? g_dt[1].lToday : g_dt[1].lAll,
+                       today ? g_dt[2].lToday : g_dt[2].lAll));
+}
+
+string DiaryHealthText()
+{
+   if(!g_diaryOk) return("off");
+   return("no trades yet");
+}
+
+string TweakText()
+{
+   if(!InpTweakArm) return("off");
+   return("on, no check yet");
+}
+
+//------------------------------------------------------------------
+//  Details panel content
+//------------------------------------------------------------------
+void DAdd(string &lines[], color &clrs[], string text, color clr)
+{
+   int n = ArraySize(lines);
+   ArrayResize(lines, n + 1);
+   ArrayResize(clrs,  n + 1);
+   lines[n] = text;
+   clrs[n]  = clr;
+}
+
+void BuildDiaryDetails(string &lines[], color &clrs[])
+{
+   ArrayResize(lines, 0);
+   ArrayResize(clrs, 0);
+
+   DAdd(lines, clrs, " DIARY DETAILS", CLR_SECTION);
+   DAdd(lines, clrs, "", CLR_TEXT);
+
+   if(g_drN == 0)
+   {
+      DAdd(lines, clrs, " The diary checks what the panel said.", CLR_TEXT);
+      DAdd(lines, clrs, " Nothing has been checked yet.", CLR_TEXT);
+      DAdd(lines, clrs, " It writes one line when a claim is settled.", CLR_DIM);
+      DAdd(lines, clrs, "", CLR_TEXT);
+   }
+
+   if(g_dc.sigN >= DIARY_MIN_JUDGE || g_dc.trdN >= DIARY_MIN_JUDGE ||
+      g_dc.regN >= DIARY_MIN_JUDGE)
+   {
+      DAdd(lines, clrs, " WHAT WE SAID  /  WHAT HAPPENED", CLR_SECTION);
+
+      if(g_dc.sigN >= DIARY_MIN_JUDGE)
+      {
+         int said = (int)MathRound(g_dc.sigSaid / (double)g_dc.sigN);
+         int real = (int)MathRound(100.0 * (double)g_dc.sigHeld / (double)g_dc.sigN);
+         DAdd(lines, clrs, StringFormat(" signal still there  said %d%%  real %d%%  (%d)",
+                                        said, real, g_dc.sigN), CLR_TEXT);
+      }
+      if(g_dc.trdN >= DIARY_MIN_JUDGE)
+      {
+         int said = (int)MathRound(g_dc.trdSaid / (double)g_dc.trdN);
+         int real = (int)MathRound(g_dc.trdDid  / (double)g_dc.trdN);
+         DAdd(lines, clrs, StringFormat(" trend length       said %d bars  real %d bars  (%d)",
+                                        said, real, g_dc.trdN), CLR_TEXT);
+      }
+      if(g_dc.regN >= DIARY_MIN_JUDGE)
+      {
+         int said = (int)MathRound(g_dc.regSaid / (double)g_dc.regN);
+         int real = (int)MathRound(g_dc.regDid  / (double)g_dc.regN);
+         DAdd(lines, clrs, StringFormat(" regime length      said %d bars  real %d bars  (%d)",
+                                        said, real, g_dc.regN), CLR_TEXT);
+      }
+      DAdd(lines, clrs, "", CLR_TEXT);
+   }
+
+   if(g_drN > 0)
+   {
+      DAdd(lines, clrs, " LAST RESULTS", CLR_SECTION);
+
+      int start = (g_drAt - g_drN + DIARY_MAX_RECENT) % DIARY_MAX_RECENT;
+      for(int i = 0; i < g_drN; i++)
+      {
+         int k = (start + i) % DIARY_MAX_RECENT;
+         string mark = g_dr[k].hit ? "yes" : "no";
+         DAdd(lines, clrs, "  " + Pad(g_dr[k].lane, 5) + " " +
+                            Pad(g_dr[k].said, 14) + " -> " +
+                            Pad(g_dr[k].did, 12) + " " + mark,
+              (g_dr[k].hit ? CLR_OK : CLR_DIM));
+      }
+      DAdd(lines, clrs, "", CLR_TEXT);
+   }
+
+   DAdd(lines, clrs, " COUNT OF RESULTS", CLR_SECTION);
+   DAdd(lines, clrs, "  M5 " + IntegerToString(g_dt[0].sAll) +
+                     "   M15 " + IntegerToString(g_dt[1].sAll) +
+                     "   M30 " + IntegerToString(g_dt[2].sAll), CLR_TEXT);
+   DAdd(lines, clrs, "", CLR_TEXT);
+
+   DAdd(lines, clrs, " FILE", CLR_SECTION);
+   DAdd(lines, clrs, "  " + StringSubstr(g_diaryName, 0, 46), CLR_DIM);
+   DAdd(lines, clrs, "  " + IntegerToString(g_diaryRows) + " results, " + g_diaryNote,
+        (g_diaryOk ? CLR_TEXT : CLR_ALERT));
+}
+
+//==================================================================
 //  PANEL
 //==================================================================
 //  The layout follows the interface sketch in automate.md section 7.
-//  Fields whose data does not exist yet - trend, regime, score, signal,
-//  trade status, the selected plan, exposure and the diary - are drawn
-//  as labels with blank values.  The frame is the same from stage to
-//  stage; only the values fill in as each stage is built.
+//  Group 1 is the lane table, group 2 is the trade plan and is still
+//  blank, group 3 is the diary.  Fields whose data does not exist yet -
+//  the selected plan and exposure - are drawn as labels with blank
+//  values.  The frame is the same from stage to stage; only the values
+//  fill in as each stage is built.
 //
 //  A line is either plain or made of coloured segments, so the market
 //  state can be red or green while the session and spread on the same
@@ -2346,7 +2924,52 @@ void BuildPanel()
    AddLine(TwoCol("Entry timing:", "TP estimate:"), CLR_DIM);
    AddLine(TwoCol("Size:", "Planned risk:"), CLR_DIM);
    AddLine(TwoCol("Combined exposure:", ""), CLR_DIM);
-   AddLine(TwoCol("Diary:", "Unknown future costs:"), CLR_DIM);
+   AddLine("", CLR_TEXT);
+   // ---------------------------------------------------------------
+   //  Group 3 - the diary.  Two rows of counts and one health line.
+   //  Order inside every block is M5 / M15 / M30, matching the table
+   //  directly above, so no legend is printed.  Each block is padded
+   //  to a fixed width, so the panel never widens as counts grow.
+   // ---------------------------------------------------------------
+   string tS = "How many signal runs the diary has checked. Each run is "
+               "counted once, 3 bars after the panel first put a figure on it.";
+   string tW = "Wins. Always zero until this build can place trades: the "
+               "diary checks what the panel said, not trades.";
+   string tL = "Losses. Always zero until this build can place trades.";
+
+   color cS = (g_diaryOk ? CLR_VALUE : CLR_DIM);
+
+   string sT[4];
+   color  sC[4];
+   string sP[4];
+   sT[0] = " Diary   today   ";              sC[0] = CLR_LABEL; sP[0] = "";
+   sT[1] = Pad(DiaryS(true),  DIARY_BLK_W);  sC[1] = cS;        sP[1] = tS;
+   sT[2] = Pad(DiaryW(true),  DIARY_BLK_W);  sC[2] = CLR_DIM;   sP[2] = tW;
+   sT[3] = DiaryL(true);                     sC[3] = CLR_DIM;   sP[3] = tL;
+   AddSegLineTip(sT, sC, sP);
+
+   string aT[4];
+   color  aC[4];
+   string aP[4];
+   aT[0] = "         all     ";              aC[0] = CLR_LABEL; aP[0] = "";
+   aT[1] = Pad(DiaryS(false), DIARY_BLK_W);  aC[1] = cS;        aP[1] = tS;
+   aT[2] = Pad(DiaryW(false), DIARY_BLK_W);  aC[2] = CLR_DIM;   aP[2] = tW;
+   aT[3] = DiaryL(false);                    aC[3] = CLR_DIM;   aP[3] = tL;
+   AddSegLineTip(aT, aC, aP);
+
+   string hT[4];
+   color  hC[4];
+   string hP[4];
+   hT[0] = " Health: ";                      hC[0] = CLR_LABEL; hP[0] = "";
+   hT[1] = DiaryHealthText();                hC[1] = (g_diaryOk ? CLR_TEXT : CLR_ALERT);
+   hP[1] = (g_diaryOk
+            ? "Advisory only. Nothing here ever gates a signal, a stop, a target or a size."
+            : "The diary could not open its own file. " + g_diaryNote);
+   hT[2] = " | Tweak: ";                     hC[2] = CLR_LABEL; hP[2] = "";
+   hT[3] = TweakText();                      hC[3] = CLR_TEXT;
+   hP[3] = "The tweak switch. On means one bounded change is armed. "
+           "There is nothing to change yet, so it does nothing.";
+   AddSegLineTip(hT, hC, hP);
 }
 
 //  Rendered width of one character at a font size, using the real
@@ -2516,13 +3139,98 @@ void DrawPanel()
       ObjectDelete(0, PANEL_PREFIX + "T" + IntegerToString(i));
 
    g_drawn = idx;
+
+   //  The side panel is placed from these, so they are kept.
+   g_panelPx = panelW;
+   g_panelPy = panelH;
+
    ChartRedraw();
 }
 
 void ClearPanel()
 {
    ObjectsDeleteAll(0, PANEL_PREFIX);
+   ObjectsDeleteAll(0, DIARY_PREFIX);
    g_drawn = 0;
+   ChartRedraw();
+}
+
+//  The optional second panel.  Drawn only when the input is on, and
+//  placed from the main panel's measured width, so the two can never
+//  overlap.  If it would run past the right edge it moves below.
+void DrawDiaryDetails()
+{
+   static bool hadDetails = false;
+
+   if(!InpDiaryDetails)
+   {
+      //  Only sweep once, on the frame that actually finds it switched
+      //  off.  This runs on every heartbeat.
+      if(hadDetails)
+      {
+         ObjectsDeleteAll(0, DIARY_PREFIX);
+         hadDetails = false;
+      }
+      return;
+   }
+
+   string lines[];
+   color  clrs[];
+   BuildDiaryDetails(lines, clrs);
+
+   int count = ArraySize(lines);
+   if(count <= 0)
+   {
+      ObjectsDeleteAll(0, DIARY_PREFIX);
+      return;
+   }
+
+   TextSetFont(FONT_NAME, -FONT_SIZE * 10);
+
+   int rowH = FONT_SIZE + ROW_EXTRA;
+   int maxW = 0;
+   for(int i = 0; i < count; i++)
+   {
+      int w = TextWidth(lines[i]);
+      if(w > maxW) maxW = w;
+   }
+
+   int slack = MathMax(12, (int)(maxW * 0.04));
+   int w = maxW + PANEL_PAD * 2 + slack;
+   int h = count * rowH + PANEL_PAD * 2;
+   if(w < 260) w = 260;
+
+   int chartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int x = PANEL_X + g_panelPx + DIARY_GAP;
+   int y = PANEL_Y;
+
+   if(chartW > 0 && x + w > chartW - 4)
+   {
+      x = PANEL_X;
+      y = PANEL_Y + g_panelPy + DIARY_GAP;
+   }
+
+   EnsureRect(DIARY_PREFIX + "BG", x, y, w, h, CLR_BG, CLR_BORDER);
+
+   int x0 = x + PANEL_PAD;
+   int y0 = y + PANEL_PAD;
+
+   for(int i = 0; i < count; i++)
+   {
+      string nm = DIARY_PREFIX + "T" + IntegerToString(i);
+      EnsureLabel(nm, x0, y0 + i * rowH, lines[i], clrs[i]);
+      ApplyTip(nm, "");
+   }
+
+   //  Remove labels left over from a taller build.
+   for(int i = count; i < count + 64; i++)
+   {
+      string nm = DIARY_PREFIX + "T" + IntegerToString(i);
+      if(ObjectFind(0, nm) < 0) break;
+      ObjectDelete(0, nm);
+   }
+
+   hadDetails = true;
    ChartRedraw();
 }
 
@@ -2674,6 +3382,7 @@ void Heartbeat()
 
    BuildPanel();
    DrawPanel();
+   DrawDiaryDetails();
 }
 
 //==================================================================
@@ -2751,11 +3460,16 @@ int OnInit()
    RefreshMarket();
    ApplyHourAdjustment();
 
+   //  The diary opens after the lanes are named, because its file
+   //  name carries the symbol and its lines carry the lane names.
+   DiaryOpen();
+
    UpdateLanes();
    LogLanes();
 
    BuildPanel();
    DrawPanel();
+   DrawDiaryDetails();
    DumpDiscovery();
 
    EventSetTimer(1);
@@ -2765,6 +3479,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   DiaryClose();
    ClearPanel();
 }
 

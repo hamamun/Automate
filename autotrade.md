@@ -40,7 +40,7 @@ and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trad
 | D3 | No forward prediction of "the bar it changes" | No tool can do this. See section 8. |
 | D4 | Votes stay **separate and visible**, never multiplied together | `v1 × v2 × v3` collapses to binary and hides which vote disagreed, which is the most useful diagnostic available. |
 | D5 | The regime label **never vetoes** a signal | Per `automate.md`. It is context. If it ever gains teeth that is a separate, explicit decision. |
-| D6 | **No per-item inputs.** A small set of technical inputs is allowed, but only ones the owner asks for by name | Every window, band, threshold and period self-configures, so there is never an input per indicator. The few inputs that do exist are switches and limits, not tuning knobs - see 2.1. Today the EA declares **none**. |
+| D6 | **No per-item inputs.** A small set of technical inputs is allowed, but only ones the owner asks for by name | Every window, band, threshold and period self-configures, so there is never an input per indicator. The few inputs that do exist are switches and limits, not tuning knobs - see 2.1. The EA now declares **two**, both `false`. |
 | D7 | Trend = **regression slope over 30 bars**, in units of a typical bar | Measured, not argued: it beats both Kalman and the Ehlers bandpass on every test in section 10.4. |
 | D8 | Everything is **causal** — closed bars only, no future-smoothed values | A number on screen must never be built from a bar that had not finished. |
 
@@ -63,10 +63,16 @@ The rule is about **tuning knobs**, not about switches:
 2. it switches or bounds behaviour, it does not define a measurement;
 3. the owner asked for it by name, in the chat, before it was written.
 
-Everything else self-configures. Today the EA declares **zero inputs**, and that number
-only changes when the owner asks. Two are on record: `Diary details` (section 11.5),
-which comes with the diary, and `Tweak` (section 6.3), which belongs to the self-tweak
-and is not built.
+Everything else self-configures. The EA now declares **two inputs**, both delivered in
+the diary build and both `false` by default:
+
+| Input | Default | What it does | Safe to leave alone? |
+|---|---|---|---|
+| `Diary details` | `false` | opens the second panel, section 11.5 | yes - the diary records either way |
+| `Tweak` | `false` | arms one bounded self-tweak, section 6.3 | yes - there is nothing to change yet |
+
+Turning either one on restarts the EA. The diary file keeps everything; only the
+in-memory run history goes cold for the first few minutes.
 
 An input also has a real cost worth stating: changing one restarts the EA and wipes the
 in-memory run history, so its panel is cold for the first minutes. That is another reason
@@ -714,7 +720,9 @@ directly above, so no legend is printed. Each block is padded to a fixed width, 
 means the panel width **never changes** as counts grow - at `S999/S999/S999` the line is
 still 60 characters, inside the 67-character table.
 
-`S` = signals graded. `W` = won. `L` = lost.
+`S` = signal runs checked. `W` = won. `L` = lost. A signal run is checked **once** -
+3 bars after the panel first put a durability figure on it - because consecutive claims
+from the same run overlap and would count the same evidence twice.
 
 **W and L mean trades, and nothing else.** Until entry exists there are no trades, so
 both print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
@@ -896,3 +904,56 @@ the estimate, so alignment cannot break.
 | Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
 | Q4 | Should the SIGNAL also carry a remaining life | open - the code tracks TREND and REGIME runs only; signal is not tracked as a run |
 | Q5 | Should regime boundaries be per-class | open - currently one set for every symbol. The measurement says no: `z` is scale-free |
+
+---
+
+## 15. The diary, as built
+
+### 15.1 What it records
+
+Three kinds of claim, and nothing else. A claim starts only when the panel actually
+showed a number, so nothing is ever graded that was never said.
+
+| Kind | Claimed when | Settled when | Stored as |
+|---|---|---|---|
+| `SIG` | a run shows a durability figure | `SIGNAL_DURA_BARS` later | said `22`, did `1` or `0` |
+| `TRD` | a trend run first has a total-life estimate | the run ends | said and actual bars |
+| `REG` | a regime run first has a total-life estimate | the run ends | said and actual bars |
+
+### 15.2 When a line is written
+
+Only when a claim settles. Nothing is written per bar, and nothing is written on attach.
+
+A verdict of `close` is used for the two length claims: within `max(2 bars, said / 4)`.
+That is a stated tolerance, not a discovered one - it exists so the RECENT list has a
+yes/no, while the calibration block shows the raw said and real averages.
+
+### 15.3 The file
+
+```
+Automate_Diary_<account>_<symbol>.csv      (FILE_COMMON, local in the tester)
+# Automate diary v1 - one line per settled claim
+2026.10.31 14:35,M5,SIG,22,1,1
+2026.10.31 15:10,M5,TRD,30,26,0
+```
+
+Append only. The file is opened exclusively for the life of the EA, so a second chart on
+the same symbol cannot write to it and shows `Health: off` instead. A line that does not
+parse is skipped - it is never repaired and never used to rewrite anything.
+
+### 15.4 What it never does
+
+No orders, no stops, no targets, no size. Nothing it stores is read back by the signal
+engine. The counters it displays are the same counters it wrote, so the panel and the
+file can never disagree.
+
+### 15.5 Honest limits
+
+- **A restart loses the claim in flight.** Pending claims live in memory; a written line
+  is never lost. At most one claim per lane is affected.
+- **Regime claims are rare.** A regime run can last a day, so `REG` lines arrive slowly.
+  That is the run being long, not the diary being broken.
+- **`W` and `L` stay zero.** There are no trades, so there is nothing to win or lose.
+  They are not repurposed to mean held and failed - see section 11.1.
+- **Small samples look decisive.** `DIARY_MIN_JUDGE` hides a comparison below 10 results
+  rather than printing a percentage built from three.

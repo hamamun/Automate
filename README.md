@@ -6,9 +6,21 @@ panel says `SIGNAL ONLY` so this can never be mistaken for a trading build.
 
 There are **no inputs to set up**. Attach it and it works everything out on its own.
 
-A small number of technical switches may be added later — but only ones the owner asks for
-by name, and only ones that are safe to leave at their default forever. No indicator period,
-band or threshold is ever an input.
+Two switches exist, both off by default and both safe to leave off: `Diary details` opens
+a second panel, and `Tweak` arms one bounded self-tweak (nothing to tweak yet). No
+indicator period, band or threshold is ever an input.
+
+## The diary
+
+Every signal run is checked once, three bars later, and the result is written to one file
+per account and symbol. Trend and regime runs are checked when they end. The diary only
+ever watches: it sends nothing, and nothing it stores is read back by the signal engine.
+
+```
+ Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
+         all     S38/S31/S12    W0/W0/W0       L0/W0/L0
+ Health: no trades yet | Tweak: off
+```
 
 | Stage | State | What it added |
 |---|---|---|
