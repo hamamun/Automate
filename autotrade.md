@@ -115,11 +115,11 @@ That is a label that means something: on noise it nearly always says Choppy.
 
 ### 4.1 The problem
 
-| Lane | 20 bars is | 128 hours is |
+| Lane | 20 bars is | 24 hours is |
 |---|---|---|
-| M5 | 100 minutes | 1536 bars |
-| M15 | 5 hours | 512 bars |
-| M30 | 10 hours | 256 bars |
+| M5 | 100 minutes | 288 bars |
+| M15 | 5 hours | 96 bars |
+| M30 | 10 hours | 48 bars |
 
 A 20-bar ER on M5 samples a coffee break; on M30 it samples half a trading day. Comparing
 those three numbers is comparing three different questions.
@@ -133,13 +133,29 @@ Votes that must react quickly stay **per-lane in bars**. The regime label become
 |---|---|---|---|---|
 | momentum window | bars | 2 | 2 | 2 |
 | structure window | bars | 20 | 20 | 20 |
-| drift span for `z` | **hours** | 128 h → 1536 bars | 128 h → 512 bars | 128 h → 256 bars |
-| closed bars loaded | bars | 1537 | 513 | 450 |
+| drift span for `z` | **hours** | 24 h → 288 bars | 24 h → 96 bars | 24 h → 48 bars |
+| closed bars loaded | bars | 289 | 97 | 49 |
 
 
-128 hours is 5.3 days: enough to span every weekday session at least once. This is a
-**candidate**, not a law — it is the number SimpleEA arrived at and the one I would test
-first.
+**24 hours, revised down from 128 on evidence.** The first build used 128 hours. Measured
+on real 5-minute candles that is 1 536 bars, and two neighbouring readings are almost the
+same number - lag-1 autocorrelation 0.98 to 0.999 - so a whole file yielded only about
+**13 independent observations**. The practical result was a column that read `Choppy` on
+100 % of bars.
+
+That reading was not a bug. At 128 hours these markets genuinely do not drift: the
+variance ratio, the canonical random-walk test (Lo-MacKinlay 1988), came in at **0.04 to
+0.36** on the crypto pairs, where 1.0 means a random walk and below 1 means mean
+reversion. Price snaps back faster than a random walk would, so a two-sigma drift almost
+never occurs.
+
+At 24 hours the same thresholds behave as designed. On liquid pairs the split comes out at
+**18.5 / 12.8 / 68.7** and **13.1 / 14.3 / 72.5**, close to the intended 5 / 20 / 75, and
+the label changes on 1 to 3 % of bars instead of never. Illiquid pairs still read `Choppy`
+almost always, which is the correct description of them.
+
+**Consequence:** the history a lane needs falls with it - 1 089 closed M5 bars instead of
+2 337.
 
 **Consequence:** stage 1 showed `M5 100259 bars` on the user's terminal, so history depth is
 not a problem in practice. On a symbol with shallow history the lane shows `DATA WAIT`
@@ -396,7 +412,7 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `STRUCTURE_PERIOD` | 20 | net-move window for the structure vote |
 | `MOMENTUM_PERIOD` | 2 | two-bar close change |
 | `PIVOT_WING` | 1 | 3-bar pivot: one closed bar each side |
-| `REGIME_HOURS` | 128 | equalised drift span |
+| `REGIME_HOURS` | 24 | equalised drift span |
 | `Z_STEADY` / `Z_MIXED` | 2.0 / 1.0 | regime boundaries in standard deviations |
 | `TREND_BAND_X` | 0.20 | trend deadband, in units of `med` |
 | `MOVE_BAND_X` | 0.50 | move deadband = `0.50 x med x sqrt(horizon)` |
@@ -637,7 +653,7 @@ plain. Text always carries the meaning.
 
 | # | Question | Status |
 |---|---|---|
-| Q1 | Regime window equalised | **decided**, 128 h candidate |
+| Q1 | Regime window equalised | **decided** at 24 h - 128 h was tested and could not resolve a label |
 | Q2 | How to show duration on the panel | **decided** - `bars/%L` inside TREND and REGIME; a separate AGE column was built first and then removed as redundant |
 | Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
 | Q4 | Should the SIGNAL also carry a remaining life | open - the code tracks TREND and REGIME runs only; signal is not tracked as a run |

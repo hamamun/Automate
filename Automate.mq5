@@ -60,7 +60,14 @@
 #define TREND_PERIOD        30      // regression window for the trend vote
 #define STRUCTURE_PERIOD    20      // net-move window for the structure vote
 #define MOMENTUM_PERIOD     2       // two-bar close change
-#define REGIME_HOURS        128     // equalised drift span, in hours
+//  24 hours, not 128.  A 128-hour span on M5 is 1536 bars, so two
+//  neighbouring readings are almost the same number: measured on real
+//  candles it gave only ~13 independent observations in a whole file,
+//  and the column read Choppy on 100% of bars - correctly, because at
+//  that distance price is not drifting.  At 24 hours the same thresholds
+//  produce the split they were designed for (5/20/75) on liquid pairs,
+//  and the span still means the same 24 hours on every lane.
+#define REGIME_HOURS        24      // equalised drift span, in hours
 #define Z_STEADY            2.0     // regime boundary, standard deviations
 #define Z_MIXED             1.0     // regime boundary, standard deviations
 #define TREND_BAND_X        0.20    // trend deadband, in units of a typical bar
