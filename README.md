@@ -208,6 +208,7 @@ The reasons it can give:
 
 | Reason | Why |
 |---|---|
+| `no price grid` | the symbol reports no tick size or point, so nothing can be priced |
 | `no live quote` | Ask or Bid is missing, so there is no price to build on |
 | `spread too wide` | the spread is past the gate, so the round trip costs too much |
 | `structure needs more history` | too few closed bars to read swings |
@@ -220,6 +221,7 @@ The reasons it can give:
 | `target does not clear the spread` | the target would not pay for the round trip |
 | `target inside the broker minimum` | the broker would reject a target that close |
 | `risk budget below the minimum lot` | 0.5 % of equity cannot buy the smallest size |
+| `margin cannot be calculated` | the broker would not return a margin requirement |
 | `not enough free margin` | the broker would refuse the order |
 
 ## What it also does (carried over from stage 1)
