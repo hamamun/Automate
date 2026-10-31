@@ -51,7 +51,9 @@ SymbolInfoSessionTrade SymbolIsSynchronized ObjectsDeleteAll ObjectCreate Object
 ObjectGetString ObjectSetString ObjectSetInteger ChartRedraw ChartGetInteger EventSetTimer EventKillTimer
 GetTickCount AccountInfoInteger AccountInfoString TerminalInfoInteger MQLInfoInteger Period EnumToString
 TextSetFont TextGetSize MathSqrt MathCos MathExp MathFloor MathPow
-ArrayInitialize PeriodSeconds iTime CopyClose CopyHigh CopyLow ArrayCopy""".split())
+ArrayInitialize PeriodSeconds iTime CopyClose CopyHigh CopyLow ArrayCopy
+FileOpen FileClose FileReadString FileWriteString FileFlush FileIsEnding FileSeek
+FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringToTime""".split())
 calls = set(re.findall(r'(\w+)\s*\(', s))
 unknown = sorted(c for c in calls if c not in set(fnames) and c not in kw and c not in b)
 chk("every call resolves", not unknown, str(unknown))
@@ -61,13 +63,20 @@ structs = {}
 for m in re.finditer(r'struct\s+(\w+)\s*\{(.*?)\};', s, re.S):
     structs[m.group(1)] = set(re.findall(r'^\s*(?:const\s+)?(?:string|int|double|long|ulong|bool|color|datetime|ENUM_\w+)\s+(\w+)', m.group(2), re.M))
 vs = {}
-for m in re.finditer(r'\b(SymbolFacts|AssetProfile|MarketState|SessionRec|LaneState|MqlTick|MqlDateTime)\s+(\w+)', s):
+for m in re.finditer(r'\b(SymbolFacts|AssetProfile|MarketState|SessionRec|LaneState|MqlTick|MqlDateTime'
+                     r'|DiaryTotals|DiaryCalib|DiaryPending|DiaryResult)\s+(\w+)', s):
     vs.setdefault(m.group(2), m.group(1))
 bad = [(v, f.group(1)) for v, t in vs.items() if t in structs
        for f in re.finditer(r'\b' + re.escape(v) + r'\.(\w+)', s) if f.group(1) not in structs[t]]
 chk("struct fields valid", not bad, str(sorted(set(bad))))
 
-chk("no input declarations", not re.search(r'^\s*input\s', s, re.M))
+# inputs: the rule is no PER-ITEM inputs (autotrade.md 2.1).  Only the
+# switches the owner asked for by name may exist, and every one of them
+# must default to false so that leaving it alone is never wrong.
+want_inputs = ["bool InpDiaryDetails = false", "bool InpTweakArm = false"]
+have_inputs = [re.sub(r'\s+', ' ', m.group(1)).strip()
+               for m in re.finditer(r'^\s*input\s+([^;]+);', s, re.M)]
+chk("only the sanctioned inputs", have_inputs == want_inputs, str(have_inputs))
 
 # every #define must actually be used, or it is dead weight in a file
 # that claims each constant has a job

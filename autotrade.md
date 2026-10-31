@@ -40,9 +40,43 @@ and later. The panel says `SIGNAL ONLY` so this can never be mistaken for a trad
 | D3 | No forward prediction of "the bar it changes" | No tool can do this. See section 8. |
 | D4 | Votes stay **separate and visible**, never multiplied together | `v1 × v2 × v3` collapses to binary and hides which vote disagreed, which is the most useful diagnostic available. |
 | D5 | The regime label **never vetoes** a signal | Per `automate.md`. It is context. If it ever gains teeth that is a separate, explicit decision. |
-| D6 | No user inputs, including for stage 2 | Constants are internal candidates, documented in section 9. |
+| D6 | **No per-item inputs.** A small set of technical inputs is allowed, but only ones the owner asks for by name | Every window, band, threshold and period self-configures, so there is never an input per indicator. The few inputs that do exist are switches and limits, not tuning knobs - see 2.1. The EA now declares **two**, both `false`. |
 | D7 | Trend = **regression slope over 30 bars**, in units of a typical bar | Measured, not argued: it beats both Kalman and the Ehlers bandpass on every test in section 10.4. |
 | D8 | Everything is **causal** — closed bars only, no future-smoothed values | A number on screen must never be built from a bar that had not finished. |
+
+### 2.1 What the input rule actually means
+
+Earlier drafts of this section said "no inputs at all". That was too strong, and wrong.
+
+The rule is about **tuning knobs**, not about switches:
+
+| Not allowed | Allowed |
+|---|---|
+| a period for each indicator | one switch that arms a bounded self-tweak |
+| a band per timeframe | a cap on how far a self-tweak may move a value |
+| a threshold the user is expected to optimise | a display toggle |
+| anything that must be set correctly before the EA behaves | anything safe to leave at its default forever |
+
+**A permitted input must satisfy all three:**
+
+1. the default is the correct setting for a new user - leaving it alone is never wrong;
+2. it switches or bounds behaviour, it does not define a measurement;
+3. the owner asked for it by name, in the chat, before it was written.
+
+Everything else self-configures. The EA now declares **two inputs**, both delivered in
+the diary build and both `false` by default:
+
+| Input | Default | What it does | Safe to leave alone? |
+|---|---|---|---|
+| `Diary details` | `false` | opens the second panel, section 11.5 | yes - the diary records either way |
+| `Tweak` | `false` | arms one bounded self-tweak, section 6.3 | yes - there is nothing to change yet |
+
+Turning either one on restarts the EA. The diary file keeps everything; only the
+in-memory run history goes cold for the first few minutes.
+
+An input also has a real cost worth stating: changing one restarts the EA and wipes the
+in-memory run history, so its panel is cold for the first minutes. That is another reason
+to keep the count near zero.
 
 ---
 
@@ -341,6 +375,40 @@ next move but not its direction, and no confidence number changes that.
 
 ---
 
+### 6.3 The armed self-tweak - proposed, not built
+
+The owner's design, recorded here so it can be reviewed before any code exists.
+
+The EA never changes a constant on its own. Instead it **raises a check**, and a person
+arms the change:
+
+```
+1. diary finds a problem        -> panel:  Check: Cost Watch
+2. owner sets Tweak = true      -> EA applies ONE bounded change
+3. panel confirms               -> Tweak done: gate 1.4 -> 1.6
+4. owner sets Tweak = false     -> EA keeps the new value, resumes watching
+```
+
+Four rules make it safe, and all four are required:
+
+| Rule | Why |
+|---|---|
+| **One change per arming** | a forgotten switch cannot turn into permanent self-tuning |
+| **Bounded range and a small step** | `1.4 -> 1.6`, never `1.4 -> 5`; the cap is internal and not an input |
+| **The new value is written to the diary file** | changing an input restarts the EA and rebuilds run history in memory; without persistence the tweak would silently vanish |
+| **Logged with a before and after row** | the diary must show what the EA was like before the change, not only after |
+
+This is the one place a user input is expected (§2.1). It is a switch, it is safe to leave
+`false` forever, and it was requested by the owner rather than invented here.
+
+**The honest risk, stated once.** A tweak is chosen by looking at past data. That exact
+method failed in this project already: a model fitted on 2018 scored worse than useless on
+2025, with coefficients that changed sign. Bounded steps limit the damage; they do not
+make the direction of a tweak reliable. The first few should be treated as experiments,
+with the before/after visible in the diary.
+
+---
+
 ## 7. Regime
 
 ```
@@ -470,7 +538,7 @@ the single number; the spread lives one hover away.
 Panel cell: `6/11` = this state is 6 bars old, the median completed run was 11.
 
 This answers the user's question — *how long will it last, how unusual is this* — from the
-symbol's own history, with no inputs and no pretence of knowing the switch bar. It also
+symbol's own history, with no tuning knobs and no pretence of knowing the switch bar. It also
 self-adapts per symbol and per lane, because it is measured, not configured.
 
 States tracked:
@@ -514,8 +582,9 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
 
-None of these is a user input (D6). Each is a starting candidate to be replaced only by a
-measurement.
+None of these is a user input (D6, 2.1) - they are internal and not exposed. Each is a
+starting candidate to be replaced only by a measurement, never by a user's opinion at
+first run.
 
 **Why `MOVE_BAND_X` is 0.50 and not 0.10.** The earlier draft used
 `max(1 tick, 0.10 x med)`. But `med` is the size of a *one-bar* move, while the momentum
@@ -625,24 +694,47 @@ answers the only question worth asking of a live panel: **how much longer**.
  Diary:                        Unknown future costs:
 ```
 
-`6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
-still ahead. `L` = left, and it applies to both numbers. `Max` = this run is already
-longer than any run on record for that lane, so no number is claimed.
+The panel is built in three groups. Group 1 is always visible; group 2 appears when
+there is a direction; group 3 is the diary.
 
-| Column | Character | Width | Contents |
-|---|---|---|---|
-| TF | 1 | 7 | `M5` `M15` `M30` |
-| TREND | 8 | 14 | `UP 6/30%L`, `UP Max`, or just `UP` |
-| REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
-| SCORE | 38 | 7 | `3/3` … `0/3` |
-| SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
-| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
+```text
+ AUTOMATE    XAUUSDm  |  Crypto  |  Hedging          <- header, always
+ MARKET OPEN | Session: unknown | Spread: 100.0 pts
 
-The header is unchanged from the earlier draft apart from losing AGE. Widest line is
-67 characters. A cell that would exceed its column drops the bar count first, then
-the estimate, so alignment cannot break.
+ TF     TREND         REGIME          SCORE  SIGNAL     TRADE STATUS   <- group 1
+ M5     UP 17/52%L     Choppy          1/3    BUY 24%    SIGNAL ONLY
+ M15    FLAT 12/34%L   Choppy          1/3    NO SIGNAL  SIGNAL ONLY
+ M30    FLAT 11/69%L   Choppy 22/48%L 1/3    NO SIGNAL  SIGNAL ONLY
 
-### 11.1 How the two numbers relate
+ (group 2 - to be specified by the owner, shown only when a direction exists)
+
+ Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0     <- group 3
+         all     S38/S31/S12    W0/W0/W0       L0/W0/L0
+ Health: Cost Watch | Tweak: off
+```
+
+### 11.1 The diary line
+
+Order inside every block is fixed as **M5 / M15 / M30**, top to bottom, matching group 1
+directly above, so no legend is printed. Each block is padded to a fixed width, which
+means the panel width **never changes** as counts grow - at `S999/S999/S999` the line is
+still 60 characters, inside the 67-character table.
+
+`S` = signal runs checked. `W` = won. `L` = lost. A signal run is checked **once** -
+3 bars after the panel first put a durability figure on it - because consecutive claims
+from the same run overlap and would count the same evidence twice.
+
+**W and L mean trades, and nothing else.** Until entry exists there are no trades, so
+both print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
+a letter that changes meaning halfway through a file is a letter that cannot be trusted.
+Claim quality - whether our own durability and life figures were honest - is read in the
+details panel (§11.5), which is what it is for.
+
+`Health:` carries the trade diagnostics (cost, score, box, chop) once there are enough
+closed trades, and `Tweak:` mirrors the switch in §6.3. Both are advisory: neither ever
+gates a signal, a stop, a target or a size.
+
+### 11.2 How the two numbers relate
 
 `barsLeft` is a median. The percent is that same median against the run's implied
 whole life:
@@ -655,13 +747,13 @@ pctLeft = 100 x barsLeft / total
 So 6 bars left at age 14 is 30 % of a 20-bar life. The two never disagree, because
 one is computed from the other.
 
-### 11.2 Why the numbers are not constant per timeframe
+### 11.3 Why the numbers are not constant per timeframe
 
 There is no per-lane horizon setting. The horizon is whatever that lane's own runs
 do. On a quiet symbol the trend turns every 6 bars; on a strong one it runs 40. The
 panel reports what it measures, which is the only version that can be right on both.
 
-### 11.3 Hover text is the only explanation
+### 11.4 Hover text is the only explanation
 
 The panel carries no legend, by request. Each cell explains itself on hover:
 
@@ -690,6 +782,55 @@ Colour: TREND and SIGNAL carry direction colour; REGIME, SCORE and TRADE STATUS 
 plain. Text always carries the meaning.
 
 ---
+
+### 11.5 The details panel
+
+Opt-in through a single input, `Diary details`, default `false`. When true, a second
+panel is drawn to the **right** of the main panel with a fixed 12 px gap.
+
+| Block | Contents |
+|---|---|
+| CALIBRATION | claimed against actual: `durability said 22% held 24% (n=38)`, `trend life said 30 bars lasted 26 (n=41)` |
+| RECENT | the last ~8 graded claims, one line each: lane, what was said, what happened, hit or miss |
+| SAMPLES | sample count per lane, or `too few to judge` under the threshold |
+| FILE | rows written, file name, last save, write errors |
+
+Four rules, all required:
+
+1. **One source of truth.** The details panel shows the same numbers as the diary line.
+   Two panels that disagree teach the owner to trust neither.
+2. **A block with no data is not drawn.** No placeholder text, no `Unknown future costs`.
+3. **Read-only.** No clicks, no buttons, no object events. It never writes and never
+   changes anything.
+4. **It must survive a narrow chart.** Position is computed from the main panel's real
+   measured width, after that panel has been drawn. If the details panel would run past
+   the chart edge, RECENT shrinks first; if it still does not fit, the panel stacks below.
+   All of its objects share one prefix and are deleted together with the main panel.
+
+Turning the input on or off restarts the EA. The diary file keeps everything, so only the
+in-memory run history goes cold for the first few minutes.
+
+`Diary details` is the **first** input the project will actually declare; `Tweak` (§6.3)
+is the second, and it arrives only with the self-tweak. It passes all three tests in
+§2.1: leaving it at `false` is never wrong, it switches a view rather than defining a
+measurement, and the owner asked for it by name.
+
+`6/30%L` = about 6 more bars from the last closed bar, and 30 % of the run's life
+still ahead. `L` = left, and it applies to both numbers. `Max` = this run is already
+longer than any run on record for that lane, so no number is claimed.
+
+| Column | Character | Width | Contents |
+|---|---|---|---|
+| TF | 1 | 7 | `M5` `M15` `M30` |
+| TREND | 8 | 14 | `UP 6/30%L`, `UP Max`, or just `UP` |
+| REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
+| SCORE | 38 | 7 | `3/3` … `0/3` |
+| SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
+| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
+
+The header is unchanged from the earlier draft apart from losing AGE. Widest line is
+67 characters. A cell that would exceed its column drops the bar count first, then
+the estimate, so alignment cannot break.
 
 ## 12. What will not be built
 
@@ -763,3 +904,56 @@ plain. Text always carries the meaning.
 | Q3 | Kalman slope or Ehlers bandpass for the trend vote | **decided against both** - regression slope measured better, section 10. Ehlers kept as a logged comparison |
 | Q4 | Should the SIGNAL also carry a remaining life | open - the code tracks TREND and REGIME runs only; signal is not tracked as a run |
 | Q5 | Should regime boundaries be per-class | open - currently one set for every symbol. The measurement says no: `z` is scale-free |
+
+---
+
+## 15. The diary, as built
+
+### 15.1 What it records
+
+Three kinds of claim, and nothing else. A claim starts only when the panel actually
+showed a number, so nothing is ever graded that was never said.
+
+| Kind | Claimed when | Settled when | Stored as |
+|---|---|---|---|
+| `SIG` | a run shows a durability figure | `SIGNAL_DURA_BARS` later | said `22`, did `1` or `0` |
+| `TRD` | a trend run first has a total-life estimate | the run ends | said and actual bars |
+| `REG` | a regime run first has a total-life estimate | the run ends | said and actual bars |
+
+### 15.2 When a line is written
+
+Only when a claim settles. Nothing is written per bar, and nothing is written on attach.
+
+A verdict of `close` is used for the two length claims: within `max(2 bars, said / 4)`.
+That is a stated tolerance, not a discovered one - it exists so the RECENT list has a
+yes/no, while the calibration block shows the raw said and real averages.
+
+### 15.3 The file
+
+```
+Automate_Diary_<account>_<symbol>.csv      (FILE_COMMON, local in the tester)
+# Automate diary v1 - one line per settled claim
+2026.10.31 14:35,M5,SIG,22,1,1
+2026.10.31 15:10,M5,TRD,30,26,0
+```
+
+Append only. The file is opened exclusively for the life of the EA, so a second chart on
+the same symbol cannot write to it and shows `Health: off` instead. A line that does not
+parse is skipped - it is never repaired and never used to rewrite anything.
+
+### 15.4 What it never does
+
+No orders, no stops, no targets, no size. Nothing it stores is read back by the signal
+engine. The counters it displays are the same counters it wrote, so the panel and the
+file can never disagree.
+
+### 15.5 Honest limits
+
+- **A restart loses the claim in flight.** Pending claims live in memory; a written line
+  is never lost. At most one claim per lane is affected.
+- **Regime claims are rare.** A regime run can last a day, so `REG` lines arrive slowly.
+  That is the run being long, not the diary being broken.
+- **`W` and `L` stay zero.** There are no trades, so there is nothing to win or lose.
+  They are not repurposed to mean held and failed - see section 11.1.
+- **Small samples look decisive.** `DIARY_MIN_JUDGE` hides a comparison below 10 results
+  rather than printing a percentage built from three.
