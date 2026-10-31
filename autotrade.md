@@ -694,10 +694,10 @@ height every few minutes is harder to read than one that does not.
  M15    FLAT 12/34%L   Choppy          1/3    NO SIGNAL
  M30    FLAT 11/69%L   Choppy 22/48%L 1/3    NO SIGNAL
 
- TF   DIR  ENTRY    SL               TP               LOT   STATE   <- group 2
- M5   BUY  2461.35  2458.90  (245)   2467.10  (575)   0.02  PLAN
- M15  SELL 2460.00  2455.40  (460)   2471.20  (1120)  0.01  PLAN
- M30  --   --       --               --               --    --
+ TF   DIR  ENTRY    LOT   TP               SL               STATE   <- group 2
+ M5   BUY  2461.35  0.02  2467.10  (575)   2458.90  (245)   PLAN
+ M15  SELL 2460.00  0.01  2471.20  (1120)  2455.40  (460)   PLAN
+ M30  --   --       --    --               --               --
 
  Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0        <- group 3
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
@@ -709,6 +709,15 @@ was true when nothing was sent. Now that each lane has a plan, the state lives o
 lane's group-2 row - `OPEN`, `WAIT`, `PLAN`, `HOLD`, `--` - and a second copy up here
 would be the same fact twice. The fixed tables are 55 characters (group 1) and 65
 (group 2), so group 2 sets the width.
+
+The trade row reads **TF, DIR, ENTRY, LOT, TP, SL, STATE** - size next to the entry it was
+sized from, then the two prices - and a refused plan prints its reason in the space the
+numbers would use, padded to the same width, so the panel never moves:
+
+```text
+ TF   DIR  ENTRY    LOT   TP               SL               STATE
+ M15  BUY  no plan: no swing to hide the stop behind        HOLD
+```
 
 ### 11.1 The diary line
 

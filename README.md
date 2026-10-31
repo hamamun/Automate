@@ -55,10 +55,10 @@ Design decisions and the measurements behind them are recorded in
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL
  M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL
 
- TF   DIR  ENTRY    SL               TP               LOT   STATE
- M5   BUY  2461.35  2458.90  (245)   2467.10  (575)   0.02  PLAN
- M15  SELL 2460.00  2455.40  (460)   2471.20  (1120)  0.01  PLAN
- M30  --   --       --               --               --    --
+ TF   DIR  ENTRY    LOT   TP               SL               STATE
+ M5   BUY  2461.35  0.02  2467.10  (575)   2458.90  (245)   PLAN
+ M15  SELL 2460.00  0.01  2471.20  (1120)  2455.40  (460)   PLAN
+ M30  --   --       --    --               --               --
 
  Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
@@ -67,7 +67,7 @@ Design decisions and the measurements behind them are recorded in
 
 Every line starts with one space. After it, the lane table puts TF / TREND / REGIME / SCORE
 / SIGNAL at characters **2, 9, 23, 39 and 46**, and the trade table puts TF / DIR / ENTRY /
-SL / TP / LOT / STATE at **2, 7, 12, 21, 38, 55 and 61**. The panel sizes itself to the
+LOT / TP / SL / STATE at **2, 7, 12, 21, 27, 44 and 61**. The panel sizes itself to the
 text it actually draws; there are no X/Y/width/font inputs.
 
 ## Reading the four measurements
@@ -173,9 +173,9 @@ One row per lane, three rows always, dashes when a lane has nothing to do.
 | Cell | Means |
 |---|---|
 | `ENTRY` | where the trade enters — the market price at 3/3, the resting price of the limit at 2/3 |
-| `SL` | the stop price, and its distance from the entry in points |
-| `TP` | the one target price, and its distance from the entry in points |
 | `LOT` | the size, rounded down |
+| `TP` | the one target price, and its distance from the entry in points |
+| `SL` | the stop price, and its distance from the entry in points |
 | `STATE` | what that lane is doing right now |
 
 | STATE | Means |
@@ -183,14 +183,22 @@ One row per lane, three rows always, dashes when a lane has nothing to do.
 | `PLAN` | a complete plan is ready; **nothing was sent** |
 | `WAIT` | a limit order is resting at the broker |
 | `OPEN` | a position is live, with its stop and target held at the broker |
-| `HOLD` | a direction exists, but no valid plan — hover for the reason |
+| `HOLD` | a direction exists, but no valid plan — the reason is printed on the row |
 | `--` | no BUY or SELL on this lane |
 
 In this build, a lane whose plan builds reads `PLAN`, because trading is off; a lane whose
 plan cannot be built reads `HOLD`. The others appear the moment trading is turned on.
 
 **HOLD is a refusal, not a failure.** The plan is thrown away and named, rather than filled
-in with a guess. The reasons it can give:
+in with a guess. The reason is printed on the row itself, where the numbers would have
+been — and repeated in the Experts log when it changes:
+
+```
+ TF   DIR  ENTRY    LOT   TP               SL               STATE
+ M15  BUY  no plan: no swing to hide the stop behind        HOLD
+```
+
+The reasons it can give:
 
 | Reason | Why |
 |---|---|
@@ -200,8 +208,6 @@ in with a guess. The reasons it can give:
 | `no swing to rest the limit on` | a 2/3 limit needs a confirmed swing on its own side |
 | `no swing to hide the stop behind` | every trade needs confirmed structure behind its stop |
 | `stop on the wrong side` | the structure found is on the wrong side of the entry |
-| `stop too close to the spread` | the stop would not clear the cost of the round trip |
-| `stop inside one normal bar` | the stop would sit inside ordinary noise |
 | `stop inside the broker minimum` | the broker would reject a stop that close |
 | `not enough history for a target` | fewer than 30 replays of this setup exist yet |
 | `target on the wrong side` | the opposing swing is behind the entry |
@@ -292,7 +298,7 @@ On the chart:
 - The trade table keeps three rows and the panel width never jumps as states change.
 - `STATE` reads `PLAN` where a plan builds, `HOLD` where it cannot, and `--` where there is
   no signal.
-- `HOLD` explains itself on hover and never shows a made-up price.
+- `HOLD` prints its reason on the row and never shows a made-up price.
 
 In the **Experts** tab:
 
