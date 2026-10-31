@@ -294,6 +294,51 @@ shown, it comes from counting this table in the EA's own run history - the machi
 which already exists - and it belongs in the hover text as a rough band, never as a
 precise percentage on the panel.
 
+### 6.2 What was built instead: the SIGNAL cell carries a durability figure
+
+The user asked for the percentage to sit on the signal rather than on the score, and
+chose durability over a strength score. That is what ships.
+
+```
+SIGNAL cell    SELL 22%     ->  22% chance this SELL is still standing in 3 bars
+               SELL         ->  not enough history to say
+               NO SIGNAL    ->  nothing to expire, unchanged
+```
+
+**The estimator** - no model, no fitted coefficients, one division:
+
+```
+P = runs that reached (age + 3) / runs that reached age
+```
+
+Counted over this lane's own completed signal runs, up to 400 of them, and only reported
+when at least 12 runs are at risk. Because it is counted locally, the era problem in 6.1
+dissolves: a symbol whose signals last longer reports a higher number without any
+constant being touched.
+
+**Measured on real candles**, 15 012 signal bars:
+
+| Quantity | Result |
+|---|---|
+| bars showing a percentage | 79 % |
+| median reading | 19 % |
+| 90th percentile | 32 % |
+| widest cell | `BUY 100%` = 10 of 10 characters |
+| calibration, 2018 | predicted 20.1 %, happened 18.4 % |
+| calibration, 2025 | predicted 22.9 %, happened 24.4 % |
+
+The figure rises with age as it should - 17 % at one bar old, 30 % at five - because a
+run that has already lasted is more likely to keep lasting.
+
+**Why the percent has no `L`.** In TREND and REGIME, `%L` means *share of life left*. In
+SIGNAL it means *chance of still standing*. One letter cannot carry two meanings in one
+row, so the signal cell shows a bare percent and the hover spells out which question is
+being answered.
+
+**What it does not say.** It is not strength and not a reason to trade. It says how long
+the label is likely to stay lit. Measured separately, the score predicts the *size* of the
+next move but not its direction, and no confidence number changes that.
+
 ---
 
 ## 7. Regime
@@ -464,6 +509,8 @@ cone comes back in stage 3, where there is a target for it to be measured agains
 | `MOVE_BAND_TICKS` | 1.00 | floor of the move deadband, in ticks |
 | `AGE_HISTORY` | 400 | completed runs kept per state |
 | `MIN_REMAIN_SAMPLES` | 6 | surviving runs needed before a remaining life is claimed |
+| `SIGNAL_DURA_BARS` | 3 | "still standing this many bars on" |
+| `MIN_DURA_SAMPLES` | 12 | runs at risk before a signal durability is claimed |
 | `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
 
@@ -566,7 +613,7 @@ answers the only question worth asking of a live panel: **how much longer**.
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
  TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
- M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY 24%   SIGNAL ONLY
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
  M30    DOWN Max     Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
@@ -626,6 +673,10 @@ The panel carries no legend, by request. Each cell explains itself on hover:
 | SIGNAL cell | "BUY or SELL needs 2 of the 3 votes to agree." |
 | TRADE STATUS | "Nothing is sent to the broker in this build." |
 
+The SIGNAL hover reads: *"SELL has stood for 2 bars. Of the past SELL runs on this symbol
+that reached this age, 22% were still standing 3 bars later. Counted from this symbol's
+own history, not a fixed rule."*
+
 The `Max` hover reads: *"M30 trend DOWN has already run 61 bars - longer than any run in
 its history (longest 58). Shown as Max: no honest estimate of what is left."*
 
@@ -676,6 +727,8 @@ plain. Text always carries the meaning.
    | remaining-life coverage | 69 % at attach, 85-92 % mid, ~100 % with full history |
    | remaining-life zeros | 0.0 % - the rejected formula gave 64.8 % |
    | widest rendered cell | TREND 12 of 14, REGIME 15 of 16 |
+   | signal durability shown | 79 % of signal bars, median 19 %, range 1-65 % |
+   | signal durability calibration | 20.1 % predicted vs 18.4 % actual (2018); 22.9 vs 24.4 (2025) |
 
    Persistence study, on real candles (section 6.1): nine conventional indicators failed
    to improve the score's own durability estimate out of sample - AUC went 0.624 -> 0.657

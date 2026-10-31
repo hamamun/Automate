@@ -29,7 +29,7 @@ Design decisions and the measurements behind them are recorded in
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
  TF     TREND         REGIME          SCORE  SIGNAL    TRADE STATUS
- M5     UP 6/30%L     Steady 12/45%L  3/3    BUY       SIGNAL ONLY
+ M5     UP 6/30%L     Steady 12/45%L  3/3    BUY 24%   SIGNAL ONLY
  M15    FLAT 9/88%L   Mixed 40/62%L   2/3    NO SIGNAL SIGNAL ONLY
  M30    DOWN 14/35%L  Choppy 3/12%L   1/3    NO SIGNAL SIGNAL ONLY
 
@@ -122,6 +122,23 @@ likely anything is. The votes are never multiplied: keeping them separate is wha
 `2/3` a real, recurring state instead of a binary.
 
 `SIGNAL` is `BUY` at `>= 2`, `SELL` at `<= -2`, otherwise `NO SIGNAL`.
+
+### SIGNAL — direction, and how long it is likely to stay
+
+`BUY 24%` reads: BUY, and a **24 % chance this signal is still standing in 3 bars**.
+No percentage means there is not enough history yet — you get plain `BUY` or `SELL`.
+
+The number is counted from this symbol's own past signals, not from a fixed rule. It
+rises as a signal ages (roughly 17 % at one bar old, 30 % at five), because a signal that
+has already lasted tends to keep lasting.
+
+**Why there is no `L` on it.** In TREND and REGIME, `%L` means *share of life left*. Here
+the percentage answers a different question — will it still be standing — so it is shown
+as a plain percent, and the hover spells it out.
+
+**What it does not mean.** It is not strength, and not a reason to trade. Measured on
+real candles, the signal is no better at predicting direction when the number is high.
+It tells you how long the label is likely to stay lit.
 
 ### TRADE STATUS — two possible values
 
@@ -231,6 +248,9 @@ In the **Experts** tab:
   only 4.9 % of bars below 20 %. It is a warning light near the end, not a countdown.
 - **The answer is wide, not tight.** Run lengths are heavy-tailed, so the cell shows one
   number but the hover gives the interquartile range - often something like "18 to 96 more".
+- **The signal percentage is about duration, not quality.** Median reading is 19 %,
+  and it was calibrated on real candles: predicted 20.1 % against 18.4 % actual in one
+  sample, 22.9 % against 24.4 % in another.
 - **Some bars carry no number.** Coverage grows as history builds: about 70 % of bars in the
   first ~2 000, 85–92 % after that, and effectively 100 % once the 400-run history is full.
   A bare `UP` means not enough past runs got this far; `UP Max` means the run is longer than
