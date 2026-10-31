@@ -2059,6 +2059,13 @@ void LogLanes()
 #define TS_HOLD           1      // a direction exists but no valid plan
 #define TS_WAIT           2      // a limit is at the broker
 #define TS_OPEN           3      // a position is open
+#define TS_PLAN           4      // a plan exists; nothing was sent
+
+//  The live-trading gate.  False means the EA builds and shows the
+//  plan but sends nothing to the broker.  It is a compile-time
+//  constant, not an input: an on/off switch has to be asked for by
+//  name before it becomes one.
+#define TRADING_LIVE      false
 
 struct DiaryTotals
 {
@@ -2647,6 +2654,7 @@ string TradeStateText(int st)
 {
    if(st == TS_OPEN) return("OPEN");
    if(st == TS_WAIT) return("WAIT");
+   if(st == TS_PLAN) return("PLAN");
    if(st == TS_HOLD) return("HOLD");
    return("--");
 }
@@ -2655,6 +2663,7 @@ color TradeStateColour(int st)
 {
    if(st == TS_OPEN) return(CLR_OK);
    if(st == TS_WAIT) return(CLR_HOLD);
+   if(st == TS_PLAN) return(CLR_SECTION);
    if(st == TS_HOLD) return(CLR_DIM);
    return(CLR_DIM);
 }
@@ -3206,6 +3215,21 @@ void TradeOnBar(int idx)
       return;
    }
 
+   //  The gate sits immediately before the send and nowhere else, so
+   //  everything above is identical whether or not trading is live.
+   if(!TRADING_LIVE)
+   {
+      g_tr[idx].state = TS_PLAN;
+      g_tr[idx].dir   = dir;
+      g_tr[idx].entry = entry;
+      g_tr[idx].sl    = sl;
+      g_tr[idx].tp    = tp;
+      g_tr[idx].lot   = lot;
+      g_tr[idx].note  = "trading is off";
+      g_tr[idx].ticket = 0;
+      return;
+   }
+
    ulong ticket = 0;
    if(!TradeSend(idx, dir, market, entry, lot, sl, tp, ticket))
    {
@@ -3294,7 +3318,8 @@ void TradeRow(int idx)
    }
 
    string tip = "";
-   if(g_tr[idx].state == TS_HOLD)      tip = "No plan: " + g_tr[idx].note + ".";
+   if(g_tr[idx].state == TS_PLAN)      tip = "A plan is ready but trading is off, so nothing was sent to the broker.";
+   else if(g_tr[idx].state == TS_HOLD) tip = "No plan: " + g_tr[idx].note + ".";
    else if(g_tr[idx].state == TS_WAIT) tip = "A limit is waiting at the broker. It is cancelled when the trend changes, the signal flips or ends, or its validity runs out.";
    else if(g_tr[idx].state == TS_OPEN) tip = "Position open. Stop and target are held at the broker.";
    else if(g_lane[idx].signal == 0)    tip = "No BUY or SELL on this lane, so nothing is planned.";
@@ -3436,7 +3461,6 @@ void LaneRow(int idx)
    string regimeTxt = "-";
    string scoreTxt  = "-";
    string signalTxt = "-";
-   string statusTxt = "DATA WAIT";
 
    string trendTip  = "";
    string regimeTip = "";
@@ -3475,7 +3499,6 @@ void LaneRow(int idx)
       signalTxt = SignalCell(SignalText(g_lane[idx].signal),
                              g_lane[idx].signalDuraPct,
                              g_lane[idx].signalDuraOk, LANE_SIGNAL_W);
-      statusTxt = "SIGNAL ONLY";
 
       // ---- hover text: the only explanation on the panel -------
       if(g_lane[idx].trendLeftOk)
@@ -3559,22 +3582,25 @@ void LaneRow(int idx)
                   "Two agreeing is 2/3, all three is 3/3.";
    }
 
-   string segT[6];
-   color  segC[6];
-   string segP[6];
+   //  The trade status lives on the plan row below, where it belongs.
+   //  Keeping a second copy up here would be the same fact twice.
+   string sigCell = Pad(signalTxt, LANE_SIGNAL_W);
+   StringTrimRight(sigCell);
+
+   string segT[5];
+   color  segC[5];
+   string segP[5];
    segT[0] = " " + Pad(tfTxt, 7);              segC[0] = CLR_TEXT;
    segT[1] = Pad(trendTxt,  LANE_TREND_W);     segC[1] = trendClr;
    segT[2] = Pad(regimeTxt, LANE_REGIME_W);    segC[2] = CLR_TEXT;
    segT[3] = Pad(scoreTxt,  LANE_SCORE_W);     segC[3] = CLR_VALUE;
-   segT[4] = Pad(signalTxt, LANE_SIGNAL_W);    segC[4] = signalClr;
-   segT[5] = statusTxt;                        segC[5] = CLR_DIM;
+   segT[4] = sigCell;                          segC[4] = signalClr;
 
    segP[0] = "";
    segP[1] = trendTip;
    segP[2] = regimeTip;
    segP[3] = scoreTip;
    segP[4] = signalTip;
-   segP[5] = "Nothing is sent to the broker in this build.";
 
    AddSegLineTip(segT, segC, segP);
 }
@@ -3591,18 +3617,20 @@ void LaneRow(int idx)
 //  same cell grid as everything else.
 void HeaderRow()
 {
-   string segT[6];
-   color  segC[6];
-   string segP[6];
+   string sigHead = Pad("SIGNAL", LANE_SIGNAL_W);
+   StringTrimRight(sigHead);
+
+   string segT[5];
+   color  segC[5];
+   string segP[5];
 
    segT[0] = " " + Pad("TF", 7);              segC[0] = CLR_SECTION;
    segT[1] = Pad("TREND", LANE_TREND_W);      segC[1] = CLR_SECTION;
    segT[2] = Pad("REGIME", LANE_REGIME_W);    segC[2] = CLR_SECTION;
    segT[3] = Pad("SCORE", LANE_SCORE_W);      segC[3] = CLR_SECTION;
-   segT[4] = Pad("SIGNAL", LANE_SIGNAL_W);    segC[4] = CLR_SECTION;
-   segT[5] = "TRADE STATUS";                  segC[5] = CLR_SECTION;
+   segT[4] = sigHead;                         segC[4] = CLR_SECTION;
 
-   for(int i = 0; i < 6; i++) segP[i] = "";
+   for(int i = 0; i < 5; i++) segP[i] = "";
 
    AddSegLineTip(segT, segC, segP);
 }

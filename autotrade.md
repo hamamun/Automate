@@ -694,24 +694,33 @@ answers the only question worth asking of a live panel: **how much longer**.
  Diary:                        Unknown future costs:
 ```
 
-The panel is built in three groups. Group 1 is always visible; group 2 appears when
-there is a direction; group 3 is the diary.
+The panel is built in three groups. All three are always visible: a row that reads
+`--` is a statement that nothing is happening on that lane, and a panel that changes
+height every few minutes is harder to read than one that does not.
 
 ```text
- AUTOMATE    XAUUSDm  |  Crypto  |  Hedging          <- header, always
+ AUTOMATE    XAUUSDm  |  Crypto  |  Hedging          <- header
  MARKET OPEN | Session: unknown | Spread: 100.0 pts
 
- TF     TREND         REGIME          SCORE  SIGNAL     TRADE STATUS   <- group 1
- M5     UP 17/52%L     Choppy          1/3    BUY 24%    SIGNAL ONLY
- M15    FLAT 12/34%L   Choppy          1/3    NO SIGNAL  SIGNAL ONLY
- M30    FLAT 11/69%L   Choppy 22/48%L 1/3    NO SIGNAL  SIGNAL ONLY
+ TF     TREND         REGIME          SCORE  SIGNAL        <- group 1
+ M5     UP 17/52%L     Choppy          1/3    BUY 24%
+ M15    FLAT 12/34%L   Choppy          1/3    NO SIGNAL
+ M30    FLAT 11/69%L   Choppy 22/48%L 1/3    NO SIGNAL
 
- (group 2 - to be specified by the owner, shown only when a direction exists)
+ TF   DIR  ENTRY    SL               TP               LOT   STATE   <- group 2
+ M5   BUY  2461.35  2458.90  (245)   2467.10  (575)   0.02  PLAN
+ M15  SELL 2460.00  2455.40  (460)   2471.20  (1120)  0.01  PLAN
+ M30  --   --       --               --               --    --
 
- Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0     <- group 3
+ Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0        <- group 3
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
  Health: Cost Watch | Tweak: off
 ```
+
+**TRADE STATUS is gone from group 1.** It used to say `SIGNAL ONLY` on every row, which
+was true when nothing was sent. Now that each lane has a plan, the state lives on that
+lane's group-2 row - `OPEN`, `WAIT`, `PLAN`, `HOLD`, `--` - and a second copy up here
+would be the same fact twice. The panel is 66 characters wide, set by group 2.
 
 ### 11.1 The diary line
 
@@ -826,7 +835,6 @@ longer than any run on record for that lane, so no number is claimed.
 | REGIME | 22 | 16 | `Steady 12/45%L`, `Steady Max`, or just the label |
 | SCORE | 38 | 7 | `3/3` … `0/3` |
 | SIGNAL | 45 | 10 | `BUY` `SELL` `NO SIGNAL` |
-| TRADE STATUS | 55 | - | `SIGNAL ONLY`, `DATA WAIT` |
 
 The header is unchanged from the earlier draft apart from losing AGE. Widest line is
 67 characters. A cell that would exceed its column drops the bar count first, then
