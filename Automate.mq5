@@ -2061,8 +2061,6 @@ void LogLanes()
 #define REPLAY_BARS       400    // closed bars scanned for analogues
 #define MAX_SPREAD_GATE   3.0    // refuse when spread exceeds this x typical
 #define TP_COST_X         2.0    // target must clear this many spreads
-#define SL_COST_X         3.0    // stop must be this far from entry, in spreads
-#define SL_NOISE_X        1.5    // stop must be this far from entry, in med bars
 
 #define TS_NONE           0      // nothing to do on this lane
 #define TS_HOLD           1      // a direction exists but no valid plan
@@ -2914,15 +2912,6 @@ bool BuildPlan(int idx, int dir, bool market, int &trendNow, int &signalNow,
    double risk = (dir > 0) ? (entry - sl) : (sl - entry);
    if(risk <= 0.0) { why = "stop on the wrong side"; return(false); }
 
-   //  Two floors: the stop must be wider than the spread costs and
-   //  wider than an ordinary bar, or it is noise rather than a plan.
-   if(spread > 0.0 && risk < spread * SL_COST_X)
-   { why = "stop too close to the spread"; return(false); }
-
-   double med = g_recentMove;
-   if(med > 0.0 && risk < med * SL_NOISE_X)
-   { why = "stop inside one normal bar"; return(false); }
-
    // ---- target ----------------------------------------------------
    double dist = MeasureTarget(idx, dir, risk, tick);
    if(dist <= 0.0) { why = "not enough history for a target"; return(false); }
@@ -3214,6 +3203,11 @@ void TradeOnBar(int idx)
 
    if(!BuildPlan(idx, dir, market, trNow, sgNow, entry, sl, tp, lot, why))
    {
+      //  Say it in Experts too: a refusal that only exists on hover
+      //  cannot be read off a screenshot.
+      if(g_tr[idx].state != TS_HOLD || g_tr[idx].note != why)
+         PrintFormat("%s HOLD - %s", g_lane[idx].name, why);
+
       g_tr[idx].state = TS_HOLD;
       g_tr[idx].dir   = dir;
       g_tr[idx].note  = why;
@@ -3334,6 +3328,27 @@ void TradeRow(int idx)
    else if(g_lane[idx].signal == 0)    tip = "No BUY or SELL on this lane, so nothing is planned.";
    else                                tip = "A direction exists but no plan has been built yet.";
 
+   //  A refused plan prints the reason in the space the numbers would
+   //  use.  Four dashes and HOLD would be a fact with no cause, which
+   //  is what makes a panel feel broken.
+   if(g_tr[idx].state == TS_HOLD)
+   {
+      string hT[4];
+      color  hC[4];
+      string hP[4];
+
+      hT[0] = " " + Pad(tf, 5);                    hC[0] = CLR_TEXT;
+      hT[1] = Pad(dirTxt, 5);                      hC[1] = SignalColour(g_tr[idx].dir);
+      hT[2] = Pad("no plan: " + g_tr[idx].note, 49); hC[2] = CLR_TEXT;
+      hT[3] = stTxt;                               hC[3] = stClr;
+
+      for(int i = 0; i < 4; i++) hP[i] = tip;
+      hP[0] = "";
+
+      AddSegLineTip(hT, hC, hP);
+      return;
+   }
+
    string segT[7];
    color  segC[7];
    string segP[7];
@@ -3341,9 +3356,9 @@ void TradeRow(int idx)
    segT[0] = " " + Pad(tf, 5);      segC[0] = CLR_TEXT;  segP[0] = "";
    segT[1] = Pad(dirTxt, 5);        segC[1] = SignalColour(g_tr[idx].dir); segP[1] = tip;
    segT[2] = Pad(entTxt, 9);        segC[2] = CLR_VALUE; segP[2] = tip;
-   segT[3] = Pad(slTxt, 17);        segC[3] = CLR_ALERT; segP[3] = tip;
+   segT[3] = Pad(lotTxt, 6);        segC[3] = CLR_VALUE; segP[3] = tip;
    segT[4] = Pad(tpTxt, 17);        segC[4] = CLR_OK;    segP[4] = tip;
-   segT[5] = Pad(lotTxt, 6);        segC[5] = CLR_VALUE; segP[5] = tip;
+   segT[5] = Pad(slTxt, 17);        segC[5] = CLR_ALERT; segP[5] = tip;
    segT[6] = stTxt;                 segC[6] = stClr;     segP[6] = tip;
 
    AddSegLineTip(segT, segC, segP);
@@ -3358,12 +3373,19 @@ void TradeHeaderRow()
    segT[0] = " " + Pad("TF", 5);     segC[0] = CLR_SECTION;
    segT[1] = Pad("DIR", 5);          segC[1] = CLR_SECTION;
    segT[2] = Pad("ENTRY", 9);        segC[2] = CLR_SECTION;
-   segT[3] = Pad("SL", 17);          segC[3] = CLR_SECTION;
+   segT[3] = Pad("LOT", 6);          segC[3] = CLR_SECTION;
    segT[4] = Pad("TP", 17);          segC[4] = CLR_SECTION;
-   segT[5] = Pad("LOT", 6);          segC[5] = CLR_SECTION;
+   segT[5] = Pad("SL", 17);          segC[5] = CLR_SECTION;
    segT[6] = "STATE";                segC[6] = CLR_SECTION;
 
-   for(int i = 0; i < 7; i++) segP[i] = "Distance in points, measured from the entry price.";
+   segP[0] = "";
+   segP[1] = "The direction of the plan on this lane.";
+   segP[2] = "The price the trade enters at: the market price for a 3/3 market order, "
+             "the resting price for a 2/3 limit.";
+   segP[3] = "Size, from the risk budget and the stop distance, rounded down.";
+   segP[4] = "The one target price. Distance in points, measured from the entry.";
+   segP[5] = "The stop price. Distance in points, measured from the entry.";
+   segP[6] = "What this lane is doing right now.";
 
    AddSegLineTip(segT, segC, segP);
 }
@@ -3564,6 +3586,16 @@ void LaneRow(int idx)
                "longer it lasts. Age so far: %d bars.",
                tfName, RegimeText(g_lane[idx].regime), done);
       }
+
+      //  The label is a measurement, so the hover says the measurement.
+      //  A row that reads Choppy on a strong trend is not a fault: the
+      //  trend is the last 30 bars, the regime is the last 24 hours.
+      regimeTip += StringFormat(
+         " The label is the last %d hours of price: the net move is %.2f "
+         "standard deviations of what a market with no drift would produce. "
+         "Steady needs %.1f, Mixed needs %.1f, so this reads %s.",
+         REGIME_HOURS, MathAbs(g_lane[idx].zValue), Z_STEADY, Z_MIXED,
+         RegimeText(g_lane[idx].regime));
 
       if(g_lane[idx].signal == 0)
          signalTip = "No BUY or SELL: the three votes do not agree strongly "
