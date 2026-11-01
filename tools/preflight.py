@@ -53,8 +53,11 @@ GetTickCount AccountInfoInteger AccountInfoString TerminalInfoInteger MQLInfoInt
 TextSetFont TextGetSize MathSqrt MathCos MathExp MathFloor MathPow
 ArrayInitialize PeriodSeconds iTime CopyClose CopyHigh CopyLow ArrayCopy
 FileOpen FileClose FileReadString FileWriteString FileFlush FileIsEnding FileSeek
-FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringToTime StringTrimRight
-OrderSend OrderSelect OrderGetDouble OrderGetInteger OrderCalcMargin PositionSelectByTicket AccountInfoDouble
+FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringToDouble
+StringToTime StringTrimRight
+OrderSend OrderSelect OrderGetTicket OrdersTotal OrderGetDouble OrderGetInteger OrderCalcMargin
+HistorySelectByPosition HistoryDealsTotal HistoryDealGetTicket HistoryDealGetDouble
+PositionSelectByTicket AccountInfoDouble
 PositionGetDouble PositionGetInteger PositionGetTicket PositionsTotal ZeroMemory NormalizeDouble
 CopyRates""".split())
 calls = set(re.findall(r'(\w+)\s*\(', s))
@@ -74,9 +77,13 @@ bad = [(v, f.group(1)) for v, t in vs.items() if t in structs
 chk("struct fields valid", not bad, str(sorted(set(bad))))
 
 # inputs: the rule is no PER-ITEM inputs (autotrade.md 2.1).  Only the
-# switches the owner asked for by name may exist, and every one of them
-# must default to false so that leaving it alone is never wrong.
-want_inputs = ["bool InpDiaryDetails = false", "bool InpTweakArm = false",
+# switches the owner asked for by name may exist.  The autotrading block
+# was asked for with defaults of true; the three older switches default
+# to false so that leaving them alone is never wrong.
+want_inputs = ["bool InpAutoTrade = true", "bool InpAllowM5 = true",
+               "bool InpAllowM15 = true", "bool InpAllowM30 = true",
+               "bool InpTrailStop = true",
+               "bool InpDiaryDetails = false", "bool InpTweakArm = false",
                "bool InpMinLot = false"]
 have_inputs = [re.sub(r'\s+', ' ', m.group(1)).strip()
                for m in re.finditer(r'^\s*input\s+([^;]+);', s, re.M)]
