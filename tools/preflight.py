@@ -120,6 +120,32 @@ for ln, line in enumerate(raw_lines):
             bad_scans.append(f"order scan at line {ln + 1} has no symbol filter")
 chk("terminal scans filter by symbol", not bad_scans, str(bad_scans))
 
+# The once-a-second path manages a resting limit and nothing else: it may
+# cancel, but it must never send or reprice, and it must never look at an
+# open position.  This is the promise the panel and the docs make.
+def body(fn):
+    i = src.find(fn + '(')
+    if i < 0:
+        return ''
+    j = src.find('{', i)
+    if j < 0:
+        return ''
+    depth, k = 0, j
+    while k < len(src):
+        if src[k] == '{':
+            depth += 1
+        elif src[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[j:k + 1]
+        k += 1
+    return ''
+
+sec = body('void ManageRestingLimit')
+bad_sec = [w for w in ('TradeSend', 'TradeModify', 'TS_OPEN') if w in sec]
+chk("the once-a-second path only cancels limits", not bad_sec,
+    "found: " + str(bad_sec) if bad_sec else "")
+
 print(f"\nlines: {src.count(chr(10))+1} | functions: {len(fnames)} | file-scope vars: {len(decls)}")
 print("RESULT:", "ALL PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")
 sys.exit(0 if not fails else 1)

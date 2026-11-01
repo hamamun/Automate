@@ -1053,36 +1053,61 @@ The plan is rebuilt on **every closed bar on every lane**, whether or not an ord
 That is what lets the panel say `HOLD` while an old position still runs: the plan moved on
 and the position did not. Nothing in the plan path closes, moves or alters a position.
 
-### 16.3 One closed bar
+### 16.3 Two beats: the closed bar, and one second
+
+The plan is a bar-close fact, so anything that needs the plan waits for the bar. A resting
+limit is not: three of its reasons to die are facts about the *order*, not about the plan,
+and they can change while a bar is still forming.
+
+**On a closed bar:**
 
 1. `TradeSync` - read the terminal: filled, closed, still resting, gone.
 2. `UpdatePlan` - rebuild the plan from this lane's own bars.
-3. `TradeManage` - the only place that sends, modifies or cancels.
+3. `TradeManage` - the only place that sends or reprices.
 
 | Situation | Action |
 |---|---|
 | first closed bar after attach | show the plan, manage a resting limit, send nothing |
-| master or lane off, or terminal blocking | cancel a resting limit; never a position |
 | position open | nothing at all |
-| limit rests, plan died - `HOLD`, flip, no signal, trend gate, 3 bars of that timeframe | cancel |
+| limit rests, plan died - `HOLD`, flip, no signal, trend gate | cancel |
 | limit rests, plan now wants 3/3 market | cancel only; no market order on this bar |
-| limit rests, planned entry is on the wrong side of the quote | cancel - it is no longer a limit |
 | limit rests, entry/stop/target moved by half a tick or more | modify to the plan's three prices |
 | flat, plan valid, no order for this signal+trend yet | send: market at 3/3, limit at 2/3 |
 
+**Once a second, `ManageRestingLimit`, orders in `TS_WAIT` only:**
+
+| Situation | Action |
+|---|---|
+| master or lane switch turned off, or terminal stops allowing trade | cancel at once |
+| limit reaches 3 x its lane period (M5 15 min, M15 45, M30 90) | cancel on the clock |
+| market walks through the price it rests at | cancel - it is no longer a limit order |
+
+The per-second path never sends, never reprices, and never looks at an open position. It
+does nothing while the market is not simply open, which also covers a stale quote - a price
+that cannot be trusted is not a price to judge an order by. The wrong-side test uses the
+order's **own** entry, read back from `ORDER_PRICE_OPEN`, not the plan's: that is the price
+actually resting at the broker.
+
+Why those three and no more: the switches, the clock and the quote are the only inputs that
+can change between bars. The signal, the trend and the plan are written once per closed bar,
+so checking them ten times a second would read the same numbers and change nothing.
+
 `atSignal`/`atTrend` keep one idea per signal, not one per bar. They are cleared when a
 limit is cancelled for a 3/3 upgrade, so a later bar may place the market order - never the
-same one, because a partial fill can race the delete.
+same one, because a partial fill can race the delete. They are **not** cleared when a limit
+dies of expiry or of a walked-through level: that idea has had its chance, and the lane
+waits for the trend or the signal to change before trying again.
 
-A cancel is not trusted on the reply alone: the lane clears only on `TRADE_RETCODE_DONE`,
-and until then the same order is retried on the next bar.
+A cancel is not trusted on the reply alone: the lane clears only on `TRADE_RETCODE_DONE`.
+Until then the same order is retried - on the next second, not the next bar.
 
 ### 16.4 The panel, once a second
 
-The order state is re-read once a second and the panel repaints at most once a second
-(`DRAW_MIN_MS`), never per tick. Both now sit inside the same throttle in `Heartbeat`: the
-read used to sit above it, so it ran on every tick while the file claimed once a second. Group 3, `Open Trade`, is one line of dashes
-for a lane with nothing at the broker, otherwise three:
+`TradeSync` and `ManageRestingLimit` run once a second, and the panel repaints at most once
+a second (`DRAW_MIN_MS`), never per tick. Both sit inside the same throttle in `Heartbeat`:
+the read used to sit above it, so it ran on every tick while this file claimed once a
+second. Group 3, `Open Trade`, is one line of dashes for a lane with nothing at the broker,
+otherwise three:
 
 ```
  Open Trade  (USD)                                Autotrading: ON

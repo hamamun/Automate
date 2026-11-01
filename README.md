@@ -293,22 +293,30 @@ stays empty because this build has one target only.
 
 ### What the EA does with an order
 
-All of it happens on a **closed bar**, never mid-bar:
+Decisions that need the plan happen on a **closed bar**; a resting limit is also watched
+**once a second**, because three of its reasons to die can happen between bars:
 
-| Situation | What the EA does |
-|---|---|
-| The EA has just been attached | the plan is shown, nothing is sent; the first send waits for one closed bar |
-| A lane is allowed and flat, the plan is valid | send it — a market order at 3/3, a limit at 2/3 |
-| The limit rests and the structure moves | **modify** it to the new entry, stop and target |
-| The plan dies — `HOLD`, a flip, no signal, the trend gate, or 3 bars of that timeframe | **cancel** the limit |
-| The plan upgrades to 3/3 while a limit rests | **cancel only**; a market order may go on a later bar, never the same one |
-| The lane, or the master switch, is off | place nothing; cancel that lane's resting limit |
-| A position is open | **nothing.** Its stop and target are held at the broker |
-| A fill or a close happens | adopted within a second, so the table does not wait for the bar |
+| Situation | Checked | What the EA does |
+|---|---|---|
+| The EA has just been attached | bar | the plan is shown, nothing is sent; the first send waits for one closed bar |
+| A lane is allowed and flat, the plan is valid | bar | send it — a market order at 3/3, a limit at 2/3 |
+| The limit rests and the structure moves | bar | **modify** it to the new entry, stop and target |
+| The plan dies — `HOLD`, a flip, no signal, or the trend gate | bar | **cancel** the limit |
+| The plan upgrades to 3/3 while a limit rests | bar | **cancel only**; a market order may go on a later bar, never the same one |
+| The lane, or the master switch, is turned off | **second** | cancel that lane's resting limit at once |
+| The limit reaches 3 × its timeframe (M5 15 min, M15 45, M30 90) | **second** | **cancel** — it gives up on the clock, not at the next bar |
+| The market walks through the price it rests at | **second** | **cancel** — it is no longer a limit order in any useful sense |
+| A position is open | — | **nothing.** Its stop and target are held at the broker |
+| A fill or a close happens | second | adopted, so the table does not wait for the bar |
+
+The once-a-second watch touches a resting limit and nothing else. It never sends, never
+reprices, and never looks at an open position; it also does nothing at all while the market
+is closed or the quote is stale.
 
 Repricing is a modify and not a cancel-and-send because a modify cannot partly fill. A
 cancel is never trusted on the first reply: the lane is only cleared once the broker
-confirms the order is gone.
+confirms the order is gone, and a cancel that is not confirmed is simply tried again on the
+next second.
 
 ### Autotrading status
 
@@ -388,8 +396,9 @@ python3 tools/preflight.py Automate.mq5
 
 Checks unbalanced braces and parentheses, duplicate file-scope declarations, duplicate
 functions, unresolved calls, argument counts, invalid struct fields, stray `input` lines,
-unused functions and non-ASCII text. It does not replace MetaEditor — it only makes the
-cheap mistakes visible before you compile.
+unused functions, non-ASCII text, whether every scan of the terminal's orders and positions
+compares the symbol, and whether the once-a-second path still only cancels limits. It does
+not replace MetaEditor — it only makes the cheap mistakes visible before you compile.
 
 ## What to check while testing
 
@@ -416,6 +425,8 @@ On the chart:
   `Diary: M5 BUY 0.02 closed, net +2.14`.
 - The diary's `Health:` line reads `saved`. `last write failed` or `off` in red means the
   file is not being written.
+- Switch a lane off while a limit is resting: the `Open Trade` row goes to dashes within a
+  second, not at the next bar, and the Experts tab says `waiting order cancelled`.
 
 In the **Experts** tab:
 
