@@ -588,10 +588,34 @@ claims no path along the way.
 | `MIN_DURA_SAMPLES` | 12 | runs at risk before a signal durability is claimed |
 | `SEED_BARS` | 800 | closed bars replayed at attach so the history is warm |
 | `TREND_L1` / `TREND_L2` | 150 / 24 | Ehlers bandpass, comparison log only |
+| `REPLAY_BARS` | 400 | closed bars replayed when measuring a target |
+| `TP_MIN_CASES` | 30 | replays needed before a target is claimed |
+| `TP_QUANTILE` | 0.50 | where the replayed favourable move is cut |
+| `TP_COST_X` | 2.0 | a target must clear this many spreads |
 
 None of these is a user input (D6, 2.1) - they are internal and not exposed. Each is a
 starting candidate to be replaced only by a measurement, never by a user's opinion at
 first run.
+
+**When the target measurement refuses, it says which refusal it was.** The replay can come
+back empty three different ways, and until 1.55 all three printed the same words:
+`not enough history for a target`. That was true for one of them and wrong for the other
+two - and it was the wrong one that showed up in practice. On a lane in a clean climb the
+replay runs perfectly, finds its 400 bars and its 300 cases, and still returns zero,
+because in half of those cases the stop a hair under the entry was hit before price moved
+this way even once. A target of zero is not a small target, it is no target; the honest
+label is `measured target too small`, and the lane waits instead of putting a target on the
+entry.
+
+| The replay | Reads |
+|---|---|
+| fewer bars than `horizon + 120` | `not enough history to measure a target` |
+| fewer than `TP_MIN_CASES` cases with a stop | `too few like this to measure a target` |
+| the 50th percentile is zero | `measured target too small` |
+
+The measurement itself is unchanged: same window, same stop rule, same quantile, same cap
+before the opposing swing. Only the sentence changed, so the panel stops blaming missing
+history for a measurement that ran and refused.
 
 **Why `MOVE_BAND_X` is 0.50 and not 0.10.** The earlier draft used
 `max(1 tick, 0.10 x med)`. But `med` is the size of a *one-bar* move, while the momentum

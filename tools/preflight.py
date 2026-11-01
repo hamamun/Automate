@@ -183,6 +183,24 @@ for i, ln in enumerate(lines_no_comment, start=1):
         early.append(f"{m.group(1)} used at line {use}, defined at {i}")
 chk("no global used before it is declared", not early, str(early))
 
+# A refusal the panel can print must be explained in the README table.
+# The point of 1.55 was that the words said "not enough history" while
+# the measurement had run and returned zero; a reason nobody documented
+# is the same fault one step earlier.
+reasons = set(re.findall(r'why\s*=\s*"([^"]+)"', src))
+reasons |= set(re.findall(r'note\s*=\s*"([^"]+)"', src))
+readme_path = (path.rsplit('/', 1)[0] + '/README.md') if '/' in path else 'README.md'
+try:
+    readme = open(readme_path, encoding='utf-8').read()
+except OSError:
+    readme = ''
+if readme:
+    undocumented = [r for r in sorted(reasons) if ('`' + r + '`') not in readme]
+    chk("every refusal the panel can print is documented", not undocumented,
+        "not in README.md: " + str(undocumented) if undocumented else "")
+else:
+    print("SKIP  every refusal the panel can print is documented (no README.md)")
+
 print(f"\nlines: {src.count(chr(10))+1} | functions: {len(fnames)} | file-scope vars: {len(decls)}")
 print("RESULT:", "ALL PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")
 sys.exit(0 if not fails else 1)
