@@ -1,16 +1,31 @@
-# Automate — stage 3: entry, stop, target and size
+# Automate — stage 4: plans, and the orders that follow them
 
 `Automate.mq5` is the EA planned in [automate.md](automate.md), built in stages. Where the
 two disagree, [autotrade.md](autotrade.md) is the later decision.
 
-**It plans trades and does not send them.** Each lane works out an entry, a stop, a target
-and a size from its own bars, and the panel prints all four with the state `PLAN`. The
-send sits behind a compile-time constant that is `false`, so nothing reaches the broker.
+**It plans a trade per lane, and sends it when it is allowed to.** Each lane works out an
+entry, a stop, a target and a size from its own bars, and the panel prints the plan and the
+order separately. A resting limit is repriced when the structure moves and cancelled when
+the plan dies. An open position is never touched: its stop and target sit at the broker.
 
-Three switches exist, all off by default and all safe to leave off: `Diary details` opens
-a second panel, `Tweak` arms one bounded self-tweak (nothing to tweak yet), and
-`Minimum lot` clamps a size up to the broker's smallest instead of refusing the trade. No
-indicator period, band or threshold is ever an input.
+Eight switches, and nothing else:
+
+| Input | Default | What it does |
+|---|---|---|
+| `Autotrading (master switch)` | on | the one switch that has to be on for any order to be sent |
+| `Allow M5 autotrade` | on | that lane may place, reprice and cancel |
+| `Allow M15 autotrade` | on | same, M15 |
+| `Allow M30 autotrade` | on | same, M30 |
+| `Trailstop enable` | on | declared; the trail engine is not built yet |
+| `Diary details` | off | opens a second panel |
+| `Tweak` | off | arms one bounded self-tweak (nothing to tweak yet) |
+| `Minimum lot` | off | clamps a size up to the broker's smallest instead of refusing the trade |
+
+The inputs say what the EA *may* do. The terminal has its own veto: with MT5's Algo Trading
+button off, nothing can be sent and the panel says `Autotrading: ON - terminal is blocking
+it` in red instead of failing quietly. Attaching the EA sends nothing either: the first
+order waits for one closed bar of that lane. No indicator period, band or threshold is ever
+an input.
 
 ## The diary
 
@@ -21,7 +36,7 @@ ever watches: it sends nothing, and nothing it stores is read back by the signal
 ```
  Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
- Health: no trades yet | Tweak: off
+ Health: trades not graded | Tweak: off
 ```
 
 `S` counts signals and the counts are live. `W` and `L` mean **filled trades**, so they read
@@ -31,8 +46,9 @@ ever watches: it sends nothing, and nothing it stores is read back by the signal
 |---|---|---|
 | 1 | merged | symbol discovery, self-classification, self-configuration, market status, named sessions |
 | 2 | merged | per-lane TREND, REGIME, SCORE and SIGNAL on M5 / M15 / M30, with a measured forward horizon on trend and regime |
-| 3 | **this build** | one planned trade per lane — entry, stop, target and size — in its own table; trading is off at compile time |
-| 4 | not started | trailing stop, TP1/TP2, sending trades, grading filled trades in the diary |
+| 3 | merged | one planned trade per lane — entry, stop, target and size — in its own table |
+| 4 | **this build** | one master and three per-lane switches; the plan is sent, repriced and cancelled; a second table shows the order at the broker |
+| 5 | not started | trailing stop, TP1/TP2, grading filled trades in the diary |
 
 Design decisions and the measurements behind them are recorded in
 [autotrade.md](autotrade.md).
@@ -42,11 +58,15 @@ Design decisions and the measurements behind them are recorded in
 1. Copy `Automate.mq5` into `MQL5/Experts/`.
 2. Compile it in MetaEditor (F7).
 3. Attach it to any chart, on any timeframe.
-4. MT5's Algo Trading button is not needed — nothing is sent to the broker.
+4. To let it trade, turn MT5's Algo Trading button on as well; with it off the panel says
+   the terminal is blocking, and nothing is sent.
 
 ## The panel
 
 ```text
+ AUTOMATE    XAUUSDm  |  Metal  |  Hedging
+ MARKET OPEN | Session: London | Spread: 240.0 pts
+
  AUTOMATE    XAUUSDm  |  Metal  |  Hedging
  MARKET OPEN | Session: London | Spread: 240.0 pts
 
@@ -60,15 +80,26 @@ Design decisions and the measurements behind them are recorded in
  M15  SELL 2460.00  0.01  2471.20  (1120)  2455.40  (460)   PLAN
  M30  --   --       --    --               --               --
 
+ Open Trade  (USD)                               Autotrading: OFF
+ M5   Open BUY   Entry 2461.35     Lot 0.02    P/L     +2.14
+      Bid 2461.10     Ask 2461.30     To TP 575 pts
+      TP 2467.10  (+11.50)   SL 2458.90  (-4.90)   TP1 --  TP2 --
+ M15  Limit SELL Entry 2462.40     Lot 0.01    P/L        --
+      Bid 2461.10     Ask 2461.30     To Entry 110 pts
+      TP 2471.20  (+8.80)    SL 2455.40  (-7.00)   TP1 --  TP2 --
+ M30  --
+
  Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
- Health: no trades yet | Tweak: off
+ Health: trades not graded | Tweak: off
 ```
 
 Every line starts with one space. After it, the lane table puts TF / TREND / REGIME / SCORE
-/ SIGNAL at characters **2, 9, 23, 39 and 46**, and the trade table puts TF / DIR / ENTRY /
-LOT / TP / SL / STATE at **2, 7, 12, 21, 27, 44 and 61**. The panel sizes itself to the
-text it actually draws; there are no X/Y/width/font inputs.
+/ SIGNAL at characters **2, 9, 23, 39 and 46**; the plan table puts TF / DIR / ENTRY / LOT
+/ TP / SL / STATE at **2, 7, 12, 21, 27, 44 and 61**; and the `Open Trade` group keeps the
+same lines under each lane while an order exists. The Autotrading status sits at the right
+edge of that group's heading. The panel sizes itself to the text it actually draws; there
+are no X/Y/width/font inputs.
 
 ## Reading the four measurements
 
@@ -172,28 +203,32 @@ as a plain percent, and the hover spells it out.
 real candles, the signal is no better at predicting direction when the number is high.
 It tells you how long the label is likely to stay lit.
 
-## The trade table
+## The plan table
 
-One row per lane, three rows always, dashes when a lane has nothing to do.
+One row per lane, three rows always, dashes when a lane has nothing to do. This table is
+what the signal **wants** on the bar that just closed. It is not the order; the order has
+its own table below.
 
 | Cell | Means |
 |---|---|
-| `ENTRY` | where the trade enters — the market price at 3/3, the resting price of the limit at 2/3 |
+| `DIR` | the direction the signal is asking for |
+| `ENTRY` | where the plan would enter — the market price at 3/3, the resting price of the limit at 2/3 |
 | `LOT` | the size, rounded down |
 | `TP` | the one target price, and its distance from the entry in points |
 | `SL` | the stop price, and its distance from the entry in points |
-| `STATE` | what that lane is doing right now |
+| `STATE` | what the plan is |
 
 | STATE | Means |
 |---|---|
-| `PLAN` | a complete plan is ready; **nothing was sent** |
-| `WAIT` | a limit order is resting at the broker |
-| `OPEN` | a position is live, with its stop and target held at the broker |
-| `HOLD` | a direction exists, but no valid plan — the reason is printed on the row |
+| `PLAN` | a complete plan exists on this bar |
+| `HOLD` | a direction exists, but no usable plan — the reason is printed on the row |
 | `--` | no BUY or SELL on this lane |
 
-In this build, a lane whose plan builds reads `PLAN`, because trading is off; a lane whose
-plan cannot be built reads `HOLD`. The others appear the moment trading is turned on.
+**The plan is rebuilt on every closed bar, on every lane**, whether or not that lane holds
+an order. A lane can therefore show `HOLD` while an older position still runs: the plan
+moved on, the position did not. Neither of those closes or alters the position.
+
+The order that actually exists is in the next table, where it can be `Open` or `Limit`.
 
 **HOLD is a refusal, not a failure.** The plan is thrown away and named, rather than filled
 in with a guess. The reason is printed on the row itself, where the numbers would have
@@ -223,6 +258,52 @@ The reasons it can give:
 | `risk budget below the minimum lot` | 0.5 % of equity cannot buy the smallest size |
 | `margin cannot be calculated` | the broker would not return a margin requirement |
 | `not enough free margin` | the broker would refuse the order |
+
+## The order at the broker
+
+A second table sits directly under the plan, same three lanes, same order. A lane with
+nothing at the broker is one line of dashes; a lane that holds something gets three:
+
+| Line | Shows |
+|---|---|
+| 1 | `Open BUY` or `Limit SELL`, the entry, the lot, and the live P/L (profit plus swap, in the account currency; commission is not included) |
+| 2 | the broker's Bid and Ask, and the distance in points to the target — or to the entry while the limit rests |
+| 3 | the target and the stop with what each is worth at this size if it is reached, then `TP1 --  TP2 --` |
+
+The money in brackets on line 3 is the value **if that price is reached**. `TP1 --  TP2 --`
+stays empty because this build has one target only.
+
+### What the EA does with an order
+
+All of it happens on a **closed bar**, never mid-bar:
+
+| Situation | What the EA does |
+|---|---|
+| The EA has just been attached | the plan is shown, nothing is sent; the first send waits for one closed bar |
+| A lane is allowed and flat, the plan is valid | send it — a market order at 3/3, a limit at 2/3 |
+| The limit rests and the structure moves | **modify** it to the new entry, stop and target |
+| The plan dies — `HOLD`, a flip, no signal, the trend gate, or 3 bars of that timeframe | **cancel** the limit |
+| The plan upgrades to 3/3 while a limit rests | **cancel only**; a market order may go on a later bar, never the same one |
+| The lane, or the master switch, is off | place nothing; cancel that lane's resting limit |
+| A position is open | **nothing.** Its stop and target are held at the broker |
+| A fill or a close happens | adopted within a second, so the table does not wait for the bar |
+
+Repricing is a modify and not a cancel-and-send because a modify cannot partly fill. A
+cancel is never trusted on the first reply: the lane is only cleared once the broker
+confirms the order is gone.
+
+### Autotrading status
+
+The heading of that table ends with one of three states:
+
+| Reads | Means |
+|---|---|
+| `Autotrading: OFF` | the master switch is off: no new order anywhere, resting limits cancelled, open positions left alone |
+| `Autotrading: ON` | orders may be sent on the lanes that are allowed |
+| `Autotrading: ON - terminal is blocking it` | the switch is on but MT5 will not let an expert send; turn on Algo Trading |
+
+Turning one lane off cancels that lane's resting limit and stops it placing anything new.
+It does **not** touch a position that lane already holds.
 
 ## What it also does (carried over from stage 1)
 
@@ -265,7 +346,7 @@ so the line reads `Session: unknown` rather than inventing a label.
 The panel shows the layout; the numbers behind it go to the **Experts** tab:
 
 ```
-Automate stage 3 - plans and execution on XAUUSDm PERIOD_M5
+Automate stage 4 - plans and autotrade on XAUUSDm PERIOD_M5
   description : Gold vs US Dollar
   path        : Metals\XAUUSDm
   ...
@@ -276,9 +357,10 @@ Automate stage 3 - plans and execution on XAUUSDm PERIOD_M5
   Ehlers vs slope: 812 agree, 96 disagree (89.4% agree) over 908 closed bars
 ```
 
-Printed at attach, hourly, and the moment a lane first comes alive. The trade plan is
-**not** logged - it lives on the chart, in the trade table, because it changes with every
-new bar and a log that repeated it would bury the discovery dump.
+Printed at attach, hourly, and the moment a lane first comes alive. The plan is **not**
+logged - it lives on the chart, in the plan table, because it changes with every new bar
+and a log that repeated it would bury the discovery dump. Orders are logged, one line each:
+what was sent, repriced or cancelled, with the prices.
 
 ## Before compiling
 
@@ -303,10 +385,14 @@ On the chart:
   copies of each other and the score is meaningless.
 - `SIGNAL` shows `NO SIGNAL` reasonably often. A panel that always says BUY is broken.
 - `REGIME` agrees across M5 / M15 / M30 most of the time.
-- The trade table keeps three rows and the panel width never jumps as states change.
-- `STATE` reads `PLAN` where a plan builds, `HOLD` where it cannot, and `--` where there is
-  no signal.
+- Both trade tables keep three rows and the panel width never jumps as states change.
+- The plan table reads `PLAN` where a plan builds, `HOLD` where it cannot, and `--` where
+  there is no signal.
 - `HOLD` prints its reason on the row and never shows a made-up price.
+- The `Open Trade` heading carries `Autotrading:` in dim grey, lime or red, and red only
+  when the master switch is on and MT5's Algo Trading is off.
+- With a lane switched off, its row in `Open Trade` is dashes and its resting limit is
+  gone; a position it already held keeps running.
 
 In the **Experts** tab:
 
@@ -318,12 +404,14 @@ In the **Experts** tab:
 
 ## Limits, stated honestly
 
-- **Trading is off.** `TRADING_LIVE` is `false` in the source. Plans are still built, sized
-  and shown; the gate sits immediately before the send, so no order can leave the terminal.
-  Turning it on is one word and one recompile, deliberately not an input — it cannot be
-  flipped on a chart by accident.
+- **One order per lane, and only the EA's own.** Orders carry a magic number per lane, so
+  a manual trade on the same symbol is invisible to it and is never modified or closed.
+- **A resting limit can be repriced; a position cannot.** The stop and target go to the
+  broker with the order, and an open position is left exactly as the broker holds it.
+- **A cancel is retried, not assumed.** The lane clears only after the broker confirms the
+  order is gone; until then the panel keeps showing it.
 - **One target, no partial closes.** TP1/TP2 belong to the trailing stop. The broker gets
-  entry, stop and target in a single request, and nothing is moved afterwards.
+  entry, stop and target in a single request.
 - **A plan never invents a price.** If the structure a stop needs is not there, the lane
   reads `HOLD` and says why. The same goes for a target with too little history: a refusal,
   never an estimate.
@@ -371,6 +459,6 @@ In the **Experts** tab:
 
 ## Next stage (not in this build)
 
-The trailing stop, and with it TP1/TP2 and partial closes. Grading filled trades goes into
-the diary at the same time, so `W` and `L` stop reading 0. Turning trading on stays a manual
-edit of `TRADING_LIVE` followed by a recompile — never a switch on the chart.
+The trailing stop — the `Trailstop enable` switch is already there, with nothing behind it
+yet — and with it TP1/TP2 and partial closes. Grading filled trades goes into the diary at
+the same time, so `W` and `L` stop reading 0. The self-tweak stays declared and empty.

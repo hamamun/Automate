@@ -1,55 +1,71 @@
 //+------------------------------------------------------------------+
-//|  Automate.mq5                                                    |
-//|                                                                  |
-//|  STAGE 3 - entry, stop, target, size and the trade table.        |
-//|                                                                  |
-//|  What this build does:                                           |
-//|    * reads the attached chart symbol and everything the broker   |
-//|      publishes about it (path, description, contract rules);     |
-//|    * classifies it (forex / metal / index / energy / crypto /    |
-//|      stock / other), cross-checks that label against the real    |
-//|      price and falls back to a general profile when unsure;      |
-//|    * derives its own starting parameters from the class and      |
-//|      from measured recent behaviour (per broker-server-hour);    |
-//|    * reports market state - open / closed / disconnected /       |
-//|      stale / trading unavailable / unknown - and the named       |
-//|      session (Tokyo / London / New York) when real UTC can be    |
-//|      established honestly;                                       |
-//|    * measures M5, M15 and M30 independently on closed bars and   |
-//|      reports TREND, REGIME, a three-vote SCORE and a SIGNAL,     |
-//|      each with a forward horizon taken from that lane's own      |
-//|      completed runs;                                             |
-//|    * plans one trade per lane from that lane's own structure: a  |
-//|      market entry at 3/3, or a limit resting on the nearest      |
-//|      confirmed swing at 2/3; a stop behind confirmed structure;  |
-//|      and one target measured by replaying the same setup over    |
-//|      the lane's history. No structure, no trade - the panel      |
-//|      says which piece was missing;                               |
-//|    * sizes the plan from equity and the stop distance, rounded   |
-//|      down, after checking the broker's lot and margin limits;    |
-//|    * records what the panel claimed in an observational diary.   |
-//|                                                                  |
-//|  TRADING IS OFF.                                                 |
-//|    TRADING_LIVE is a compile-time constant and it is false. The  |
-//|    plan is still built, sized and shown - STATE reads PLAN - but |
-//|    the gate sits immediately before OrderSend and nothing        |
-//|    reaches the broker. Turning it on has to be a deliberate act: |
-//|    change that one word and recompile.                           |
-//|                                                                  |
-//|  Three switches, all off by default and all safe to leave off:   |
-//|  diary details, the tweak switch (nothing to tweak yet) and      |
-//|  minimum lot (clamp a size up instead of refusing the trade).    |
-//|  Everything else is discovered or measured.                      |
+//|  Automate.mq5                                                  |
+//|                                                                |
+//|  STAGE 4 - entry, stop, target, size, and the order.           |
+//|                                                                |
+//|  What this build does:                                         |
+//|    * reads the attached chart symbol and everything the broker |
+//|      publishes about it (path, description, contract rules);   |
+//|    * classifies it (forex / metal / index / energy / crypto /  |
+//|      stock / other), cross-checks that label against the real  |
+//|      price and falls back to a general profile when unsure;    |
+//|    * derives its own starting parameters from the class and    |
+//|      from measured recent behaviour (per broker-server-hour);  |
+//|    * reports market state - open / closed / disconnected /     |
+//|      stale / trading unavailable / unknown - and the named     |
+//|      session (Tokyo / London / New York) when real UTC can be  |
+//|      established honestly;                                     |
+//|    * measures M5, M15 and M30 independently on closed bars and |
+//|      reports TREND, REGIME, a three-vote SCORE and a SIGNAL,   |
+//|      each with a forward horizon taken from that lane's own    |
+//|      completed runs;                                           |
+//|    * plans one trade per lane from that lane's own structure: a|
+//|      market entry at 3/3, or a limit resting on the nearest    |
+//|      confirmed swing at 2/3; a stop behind confirmed structure;|
+//|      and one target measured by replaying the same setup over  |
+//|      the lane's history. No structure, no trade - the panel    |
+//|      says which piece was missing;                             |
+//|    * sizes the plan from equity and the stop distance, rounded |
+//|      down, after checking the broker's lot and margin limits;  |
+//|    * sends it when the lane is allowed: a market order at 3/3, |
+//|      a resting limit at 2/3; then reprices the limit when the  |
+//|      structure moves, cancels it when the plan dies, and       |
+//|      leaves an open position alone with its broker stop and    |
+//|      target;                                                   |
+//|    * records what the panel claimed in an observational diary. |
+//|                                                                |
+//|  AUTOTRADE IS ON.                                              |
+//|                                                                |
+//|    One master switch, and one for each lane. With a lane on,   |
+//|    a resting limit is repriced onto the new plan, cancelled    |
+//|    when that plan dies, and replaced by a market order one     |
+//|    bar after a 3/3 upgrade. An open position is never          |
+//|    touched: its stop and target sit at the broker. With a      |
+//|    lane off, nothing is placed there and its resting limit is  |
+//|    cancelled.                                                  |
+//|                                                                |
+//|    The terminal has to allow it too. Algo Trading off reads    |
+//|    as "terminal is blocking it" on the panel, and nothing is   |
+//|    sent.                                                       |
+//|                                                                |
+//|    Attaching sends nothing. The first order waits for a bar to |
+//|    close with the EA running, so attaching a chart is never    |
+//|    itself an instruction to trade.                             |
+//|                                                                |
+//|  Five switches, on as asked: master autotrade, allow M5, allow |
+//|  M15, allow M30, and trailstop enable - declared here; the     |
+//|  trail engine not built yet. Three older switches stay off:    |
+//|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.30"
-#property description "Automate stage 3: self-discovery, market and session status, trend / regime / score / signal per timeframe, and a planned trade per timeframe - entry, stop, target and size."
+#property version   "1.40"
+#property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, and the order the EA holds - with one master autotrade switch and one per timeframe."
 #property description "Three switches, all off by default. Trading is off at compile time, so no order can be sent. Attach to any chart and timeframe."
 
 //==================================================================
 //  INTERNAL CONSTANTS  (deliberately not inputs)
 //==================================================================
-#define EA_STAGE            "stage 3 - plans and execution"
+#define EA_STAGE            "stage 4 - plans and autotrade"
 #define PANEL_PREFIX        "AUT_"
 #define PANEL_X             10
 #define PANEL_Y             20
@@ -65,7 +81,7 @@
 #define SESSION_REFRESH_SEC 300     // re-read the broker session table
 #define SPREAD_SAMPLE_SEC   5       // spread sampling interval
 #define STALE_MINUTES       5.0     // a quote older than this is stale
-#define DRAW_MIN_MS         250     // never repaint faster than this
+#define DRAW_MIN_MS         1000    // the panel repaints once a second, not per tick
 
 //  Stage 2.  Every threshold below was calibrated on synthetic series
 //  before it was written down; the calibrations are in autotrade.md.
@@ -116,12 +132,21 @@ const color CLR_DIM     = C'150,150,150';
 //==================================================================
 //  INPUTS
 //==================================================================
-//  Two, both switches, both false by default.  Neither defines a
-//  measurement and neither has to be set correctly: leaving both off
-//  is a complete, correct configuration.  See autotrade.md 2.1.
-input bool InpDiaryDetails = false;   // Diary details
-input bool InpTweakArm     = false;   // Tweak (arm one self-tweak)
-input bool InpMinLot       = false;   // Minimum lot
+//  Eight switches, no measurements.  Nothing here sets a period, a
+//  band or a threshold: those are discovered or measured, which is
+//  what autotrade.md 2.1 asks for.
+//
+//  Autotrading is ON by default, as asked.  It is a switch, not a
+//  promise: with it on and MT5's Algo Trading button off, nothing can
+//  be sent, and the panel says so instead of failing quietly.
+input bool InpAutoTrade     = true;   // Autotrading (master switch)
+input bool InpAllowM5       = true;   // Allow M5 autotrade
+input bool InpAllowM15      = true;   // Allow M15 autotrade
+input bool InpAllowM30      = true;   // Allow M30 autotrade
+input bool InpTrailStop     = true;   // Trailstop enable (engine not built yet)
+input bool InpDiaryDetails  = false;  // Diary details
+input bool InpTweakArm      = false;  // Tweak (arm one self-tweak)
+input bool InpMinLot        = false;  // Minimum lot
 
 //  Array indices for the classifier.  Plain integers on purpose: the
 //  scoring code stays readable and free of enum/int conversions.
@@ -335,6 +360,15 @@ string Pad(string text, int width)
    int n = StringLen(text);
    if(n >= width) return(text);
    return(text + Spaces(width - n));
+}
+
+//  Right-aligned in a fixed width, so a column does not move when a
+//  number gains a digit or a sign.
+string PadL(string text, int width)
+{
+   int n = StringLen(text);
+   if(n >= width) return(text);
+   return(Spaces(width - n) + text);
 }
 
 //  "Label   value" with one leading space, used by every detail line.
@@ -2062,17 +2096,14 @@ void LogLanes()
 #define MAX_SPREAD_GATE   3.0    // refuse when spread exceeds this x typical
 #define TP_COST_X         2.0    // target must clear this many spreads
 
-#define TS_NONE           0      // nothing to do on this lane
-#define TS_HOLD           1      // a direction exists but no valid plan
-#define TS_WAIT           2      // a limit is at the broker
+#define TS_NONE           0      // this lane holds no order
+#define TS_WAIT           2      // a limit is resting at the broker
 #define TS_OPEN           3      // a position is open
-#define TS_PLAN           4      // a plan exists; nothing was sent
 
-//  The live-trading gate.  False means the EA builds and shows the
-//  plan but sends nothing to the broker.  It is a compile-time
-//  constant, not an input: an on/off switch has to be asked for by
-//  name before it becomes one.
-#define TRADING_LIVE      false
+//  The send is gated by the Autotrading input and by the terminal's
+//  own permission, nothing else.  There is no compile-time switch any
+//  more: one master switch, and the panel names which of the three
+//  states it is in.
 
 struct DiaryTotals
 {
@@ -2509,10 +2540,12 @@ string DiaryL(bool today)
                        today ? g_dt[2].lToday : g_dt[2].lAll));
 }
 
+//  The diary grades signals.  It does not grade filled trades yet, so
+//  it says that instead of claiming there are none - orders exist now.
 string DiaryHealthText()
 {
    if(!g_diaryOk) return("off");
-   return("no trades yet");
+   return("trades not graded");
 }
 
 string TweakText()
@@ -2620,20 +2653,42 @@ void BuildDiaryDetails(string &lines[], color &clrs[])
 
 struct LaneTrade
 {
-   int      state;        // TS_NONE / TS_HOLD / TS_WAIT / TS_OPEN
-   int      dir;          // -1 SELL / +1 BUY
-   double   entry;        // filled price, or the pending price
+   int      state;        // TS_NONE / TS_WAIT / TS_OPEN
+   int      dir;          // -1 SELL / +1 BUY of the order
+   double   entry;        // filled price, or the resting price
    double   sl;
    double   tp;
    double   lot;
    ulong    ticket;       // order ticket while waiting, position ticket while open
-   datetime until;        // local clock when a waiting limit gives up
+   datetime until;        // local clock: a limit gives up, or a fill has to appear
    int      atTrend;      // trend when the order was placed
    int      atSignal;     // signal when the order was placed
-   string   note;         // the reason a lane is holding
+   double   pnl;          // live profit plus swap, account currency
 };
 
 LaneTrade g_tr[LANE_COUNT];
+
+//  The PLAN is what the signal wants on this bar; the ORDER is what
+//  exists at the broker.  They are separate on purpose: a lane can
+//  hold a position from an older plan while the plan itself has moved
+//  on, and the panel has to be able to say both at once.
+struct LanePlan
+{
+   bool     ok;           // a complete plan exists right now
+   int      dir;          // -1 SELL / +1 BUY / 0 no signal
+   bool     market;       // 3/3 -> market entry, otherwise a limit
+   double   entry;
+   double   sl;
+   double   tp;
+   double   lot;
+   string   note;         // why there is no usable plan
+};
+
+LanePlan g_plan[LANE_COUNT];
+
+//  False until this lane has seen one closed bar with the EA running.
+//  The first send waits for it; see TradeOnBar.
+bool g_armed[LANE_COUNT];
 
 //------------------------------------------------------------------
 //  Small helpers
@@ -2657,22 +2712,50 @@ ulong LaneMagic(int idx)
    return(20261031 + (ulong)idx);
 }
 
-string TradeStateText(int st)
+//  Is this lane allowed to place anything?  The master switch, then
+//  the lane's own switch.
+bool LaneAllowed(int idx)
 {
-   if(st == TS_OPEN) return("OPEN");
-   if(st == TS_WAIT) return("WAIT");
-   if(st == TS_PLAN) return("PLAN");
-   if(st == TS_HOLD) return("HOLD");
-   return("--");
+   if(!InpAutoTrade) return(false);
+   if(idx == 0) return(InpAllowM5);
+   if(idx == 1) return(InpAllowM15);
+   return(InpAllowM30);
 }
 
-color TradeStateColour(int st)
+//  The terminal's own permission.  With this off nothing can be sent,
+//  whatever the inputs say - so the panel says it rather than letting
+//  orders fail one by one.
+bool BrokerAllowsTrade()
 {
-   if(st == TS_OPEN) return(CLR_OK);
-   if(st == TS_WAIT) return(CLR_HOLD);
-   if(st == TS_PLAN) return(CLR_SECTION);
-   if(st == TS_HOLD) return(CLR_DIM);
-   return(CLR_DIM);
+   return(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 &&
+          MQLInfoInteger(MQL_TRADE_ALLOWED) != 0);
+}
+
+string AutoTradeText()
+{
+   if(!InpAutoTrade)             return("Autotrading: OFF");
+   if(!BrokerAllowsTrade())      return("Autotrading: ON - terminal is blocking it");
+   return("Autotrading: ON");
+}
+
+color AutoTradeColour()
+{
+   if(!InpAutoTrade)             return(CLR_DIM);
+   if(!BrokerAllowsTrade())      return(CLR_ALERT);
+   return(CLR_OK);
+}
+
+//  Group 2's vocabulary: what the plan is, never what the order is.
+string PlanStateText(int idx)
+{
+   if(!g_lane[idx].ready || g_lane[idx].signal == 0) return("--");
+   return(g_plan[idx].ok ? "PLAN" : "HOLD");
+}
+
+color PlanStateColour(int idx)
+{
+   if(!g_lane[idx].ready || g_lane[idx].signal == 0) return(CLR_DIM);
+   return(g_plan[idx].ok ? CLR_SECTION : CLR_DIM);
 }
 
 //  A confirmed swing is a real three-bar turn: lower than both
@@ -3024,7 +3107,10 @@ bool TradeSend(int idx, int dir, bool market, double price, double lot,
    return(true);
 }
 
-void TradeRemove(int idx)
+//  clearIdea: forget which signal placed the limit.  Used when the
+//  plan wants the same idea as a market entry, so a later bar may send
+//  it instead of the latch treating it as already spent.
+void TradeRemove(int idx, bool clearIdea = false)
 {
    if(g_tr[idx].state != TS_WAIT || g_tr[idx].ticket == 0) return;
 
@@ -3042,6 +3128,12 @@ void TradeRemove(int idx)
       PrintFormat("%s: waiting order cancelled", g_lane[idx].name);
       g_tr[idx].state  = TS_NONE;
       g_tr[idx].ticket = 0;
+      g_tr[idx].until  = 0;
+      if(clearIdea)
+      {
+         g_tr[idx].atTrend  = 0;
+         g_tr[idx].atSignal = 0;
+      }
       return;
    }
 
@@ -3071,16 +3163,28 @@ void TradeAdopt(int idx)
    if(t == 0)
    {
       g_tr[idx].state = TS_NONE;
+      g_tr[idx].pnl   = 0.0;
       return;
    }
 
    g_tr[idx].state = TS_OPEN;
-   g_tr[idx].note  = "";
    g_tr[idx].sl    = PositionGetDouble(POSITION_SL);
    g_tr[idx].tp    = PositionGetDouble(POSITION_TP);
    g_tr[idx].lot   = PositionGetDouble(POSITION_VOLUME);
    g_tr[idx].entry = PositionGetDouble(POSITION_PRICE_OPEN);
    g_tr[idx].dir   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
+   g_tr[idx].pnl   = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+}
+
+ulong FindLaneOrder(int idx)
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong t = OrderGetTicket(i);
+      if(t == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) == (long)LaneMagic(idx)) return(t);
+   }
+   return(0);
 }
 
 //------------------------------------------------------------------
@@ -3088,6 +3192,29 @@ void TradeAdopt(int idx)
 //------------------------------------------------------------------
 void TradeSync(int idx)
 {
+   //  An order with this lane's magic and no record of it in this run:
+   //  a restart, or the EA re-attached.  Adopt it rather than place a
+   //  second one beside it.
+   if(g_tr[idx].state == TS_NONE)
+   {
+      ulong o = FindLaneOrder(idx);
+      if(o == 0) return;
+
+      g_tr[idx].state  = TS_WAIT;
+      g_tr[idx].ticket = o;
+      g_tr[idx].entry  = OrderGetDouble(ORDER_PRICE_OPEN);
+      g_tr[idx].sl     = OrderGetDouble(ORDER_SL);
+      g_tr[idx].tp     = OrderGetDouble(ORDER_TP);
+      g_tr[idx].lot    = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      g_tr[idx].dir    = (OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_LIMIT ? 1 : -1);
+      g_tr[idx].atTrend  = g_lane[idx].trend;
+      g_tr[idx].atSignal = g_lane[idx].signal;
+      g_tr[idx].until    = ServerNow() + (int)(3 * PeriodSeconds(g_lane[idx].tf));
+      PrintFormat("%s: adopted resting order %s", g_lane[idx].name,
+                  IntegerToString((long)o));
+      return;
+   }
+
    if(g_tr[idx].state == TS_OPEN)
    {
       //  Ticket 0 means a market request was just sent and the broker
@@ -3095,7 +3222,11 @@ void TradeSync(int idx)
       //  the lane closed - that would allow a second order.
       if(g_tr[idx].ticket == 0)
       {
+         //  Just sent: the broker may not have published it yet.  Give
+         //  it a few seconds before deciding the lane is flat again.
          TradeAdopt(idx);
+         if(g_tr[idx].state == TS_NONE && ServerNow() <= g_tr[idx].until)
+            g_tr[idx].state = TS_OPEN;
          return;
       }
 
@@ -3107,7 +3238,7 @@ void TradeSync(int idx)
          g_tr[idx].atSignal = g_lane[idx].signal;
          g_tr[idx].state  = TS_NONE;
          g_tr[idx].ticket = 0;
-         g_tr[idx].note   = "";
+         g_tr[idx].pnl    = 0.0;
          return;
       }
       g_tr[idx].sl  = PositionGetDouble(POSITION_SL);
@@ -3115,6 +3246,7 @@ void TradeSync(int idx)
       g_tr[idx].lot = PositionGetDouble(POSITION_VOLUME);
       g_tr[idx].entry = PositionGetDouble(POSITION_PRICE_OPEN);
       g_tr[idx].dir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
+      g_tr[idx].pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
       return;
    }
 
@@ -3139,61 +3271,42 @@ void TradeSync(int idx)
 }
 
 //------------------------------------------------------------------
-//  One closed bar on one lane
+//  The plan, rebuilt on every closed bar
 //------------------------------------------------------------------
-void TradeOnBar(int idx)
+void PlanClear(int idx)
 {
-   TradeSync(idx);
+   g_plan[idx].ok     = false;
+   g_plan[idx].dir    = 0;
+   g_plan[idx].market = false;
+   g_plan[idx].entry  = 0.0;
+   g_plan[idx].sl     = 0.0;
+   g_plan[idx].tp     = 0.0;
+   g_plan[idx].lot    = 0.0;
+   g_plan[idx].note   = "";
+}
 
-   //  No new idea while the broker is shut; an open position keeps its
-   //  broker-side stop and target.
-   if(g_m.code != MS_OPEN)
-   {
-      if(g_tr[idx].state == TS_NONE || g_tr[idx].state == TS_HOLD)
-      {
-         g_tr[idx].state = TS_HOLD;
-         g_tr[idx].note  = "market closed";
-      }
-      return;
-   }
+//  Runs on every closed bar whatever this lane holds.  A lane with a
+//  position still has a plan: it answers "what would this signal do
+//  now", and that is what group 2 shows.  The order lives elsewhere.
+void UpdatePlan(int idx)
+{
+   bool   hadOk   = g_plan[idx].ok;
+   string hadNote = g_plan[idx].note;
 
-   //  A waiting limit dies when the reason for it dies.
-   if(g_tr[idx].state == TS_WAIT)
-   {
-      bool signalGone   = (g_lane[idx].signal == 0);
-      bool signalFlipped = (g_lane[idx].signal != g_tr[idx].atSignal);
-      bool trendChanged  = (g_lane[idx].trend  != g_tr[idx].atTrend);
-      bool expired       = (g_tr[idx].until > 0 && ServerNow() > g_tr[idx].until);
-
-      if(signalGone || signalFlipped || trendChanged || expired)
-      {
-         TradeRemove(idx);
-         return;
-      }
-   }
-
-   if(g_tr[idx].state == TS_OPEN) return;
-
-   //  A fill can arrive a moment after the request: adopt it before
-   //  deciding to send anything else for this lane.
-   if(FindLanePosition(idx) != 0)
-   {
-      TradeAdopt(idx);
-      return;
-   }
+   PlanClear(idx);
 
    int dir = g_lane[idx].signal;
-   if(dir == 0)
+   if(dir == 0) return;
+
+   g_plan[idx].dir = dir;
+
+   if(g_m.code != MS_OPEN)
    {
-      g_tr[idx].state = TS_NONE;
-      g_tr[idx].note  = "";
+      g_plan[idx].note = "market closed";
+      if(hadOk || hadNote != g_plan[idx].note)
+         PrintFormat("%s HOLD - %s", g_lane[idx].name, g_plan[idx].note);
       return;
    }
-
-   //  One idea per signal, not per bar: after a trade is closed the
-   //  lane waits for the signal or the trend to change.
-   if(g_tr[idx].atSignal == g_lane[idx].signal &&
-      g_tr[idx].atTrend  == g_lane[idx].trend) return;
 
    bool market = (MathAbs(g_lane[idx].score) >= 3);
 
@@ -3203,44 +3316,172 @@ void TradeOnBar(int idx)
 
    if(!BuildPlan(idx, dir, market, trNow, sgNow, entry, sl, tp, lot, why))
    {
-      //  Say it in Experts too: a refusal that only exists on hover
-      //  cannot be read off a screenshot.
-      if(g_tr[idx].state != TS_HOLD || g_tr[idx].note != why)
+      g_plan[idx].note = why;
+      if(hadOk || hadNote != why)
          PrintFormat("%s HOLD - %s", g_lane[idx].name, why);
-
-      g_tr[idx].state = TS_HOLD;
-      g_tr[idx].dir   = dir;
-      g_tr[idx].note  = why;
-      g_tr[idx].entry = 0.0;
-      g_tr[idx].sl    = 0.0;
-      g_tr[idx].tp    = 0.0;
-      g_tr[idx].lot   = 0.0;
       return;
    }
 
-   //  The gate sits immediately before the send and nowhere else, so
-   //  everything above is identical whether or not trading is live.
-   if(!TRADING_LIVE)
+   g_plan[idx].ok     = true;
+   g_plan[idx].market = market;
+   g_plan[idx].entry  = entry;
+   g_plan[idx].sl     = sl;
+   g_plan[idx].tp     = tp;
+   g_plan[idx].lot    = lot;
+}
+
+//------------------------------------------------------------------
+//  Reprice a resting limit onto the current plan
+//------------------------------------------------------------------
+bool TradeModify(int idx)
+{
+   if(g_tr[idx].state != TS_WAIT || g_tr[idx].ticket == 0) return(false);
+   if(!g_plan[idx].ok) return(false);
+
+   MqlTradeRequest req;
+   MqlTradeResult  res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action    = TRADE_ACTION_MODIFY;
+   req.order     = g_tr[idx].ticket;
+   req.symbol    = _Symbol;
+   req.price     = NormalizeDouble(g_plan[idx].entry, g_f.digits);
+   req.sl        = NormalizeDouble(g_plan[idx].sl, g_f.digits);
+   req.tp        = NormalizeDouble(g_plan[idx].tp, g_f.digits);
+   req.type_time = ORDER_TIME_GTC;
+
+   if(!OrderSend(req, res) ||
+      (res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_PLACED))
    {
-      g_tr[idx].state = TS_PLAN;
-      g_tr[idx].dir   = dir;
-      g_tr[idx].entry = entry;
-      g_tr[idx].sl    = sl;
-      g_tr[idx].tp    = tp;
-      g_tr[idx].lot   = lot;
-      g_tr[idx].note  = "trading is off";
-      g_tr[idx].ticket = 0;
+      PrintFormat("%s: reprice not confirmed (%d)", g_lane[idx].name, res.retcode);
+      return(false);
+   }
+
+   PrintFormat("%s: limit repriced to %s, stop %s, target %s",
+               g_lane[idx].name,
+               DoubleToString(g_plan[idx].entry, g_f.digits),
+               DoubleToString(g_plan[idx].sl, g_f.digits),
+               DoubleToString(g_plan[idx].tp, g_f.digits));
+
+   g_tr[idx].entry = g_plan[idx].entry;
+   g_tr[idx].sl    = g_plan[idx].sl;
+   g_tr[idx].tp    = g_plan[idx].tp;
+   return(true);
+}
+
+//  A limit has to rest on the correct side of the quote: a BUY below
+//  the Ask, a SELL above the Bid.  When the market walks through the
+//  planned entry the resting price is no longer a limit at all, so the
+//  plan is treated as gone rather than sent and rejected.
+bool LimitSideOk(int idx)
+{
+   if(!g_plan[idx].ok || g_plan[idx].market) return(false);
+   if(g_plan[idx].dir > 0) return(g_plan[idx].entry < g_f.ask);
+   if(g_plan[idx].dir < 0) return(g_plan[idx].entry > g_f.bid);
+   return(false);
+}
+
+//------------------------------------------------------------------
+//  One closed bar: keep the order honest against the plan
+//------------------------------------------------------------------
+//  maySend is false on the first closed bar after attach.  The plan is
+//  shown at once, a resting limit is still managed, but no new order is
+//  sent until a bar has actually closed with the EA running.  Attaching
+//  is not by itself an instruction to trade.
+void TradeManage(int idx, bool maySend)
+{
+   //  A position that is already there is adopted even when nothing may
+   //  be sent, so the panel states the fact instead of hiding it.
+   if(g_tr[idx].state == TS_NONE && FindLanePosition(idx) != 0)
+   {
+      TradeAdopt(idx);
       return;
    }
+
+   //  Switched off, this lane not allowed, or the terminal blocking
+   //  trading: cancel our resting limit.  Never an open position.
+   if(g_tr[idx].state != TS_OPEN && (!LaneAllowed(idx) || !BrokerAllowsTrade()))
+   {
+      //  The idea is dropped with the order, so switching the lane back
+      //  on, or clearing the terminal's block, acts on the plan as it
+      //  stands instead of waiting for the signal to change first.
+      if(g_tr[idx].state == TS_WAIT) TradeRemove(idx, true);
+      return;
+   }
+
+   //  The broker owns the exit of an open position: stop and target
+   //  are attached to it, and no signal change moves them.
+   if(g_tr[idx].state == TS_OPEN) return;
+
+   //  A fill can arrive a moment after the request.
+   if(FindLanePosition(idx) != 0)
+   {
+      TradeAdopt(idx);
+      return;
+   }
+
+   //  Nothing can fill while the broker is shut, so nothing changes.
+   if(g_m.code != MS_OPEN) return;
+
+   if(g_tr[idx].state == TS_WAIT)
+   {
+      bool signalGone = (g_lane[idx].signal == 0);
+      bool flipped    = (g_lane[idx].signal != g_tr[idx].atSignal);
+      bool trendMoved = (g_lane[idx].trend  != g_tr[idx].atTrend);
+      bool expired    = (g_tr[idx].until > 0 && ServerNow() > g_tr[idx].until);
+      bool planDied   = (!g_plan[idx].ok);
+
+      if(signalGone || flipped || trendMoved || expired || planDied)
+      {
+         TradeRemove(idx);
+         return;
+      }
+
+      //  The plan now wants a market entry.  Cancel, and do not replace
+      //  on this bar: a partial fill may be in flight while the delete
+      //  is processed.  A later bar may place it.
+      if(g_plan[idx].market)
+      {
+         TradeRemove(idx, true);
+         return;
+      }
+
+      //  The planned entry is no longer a limit price: the market
+      //  walked through it.  The plan as placed cannot survive.
+      if(!LimitSideOk(idx))
+      {
+         TradeRemove(idx);
+         return;
+      }
+
+      //  Still a valid limit, but the structure moved.  Follow it.
+      double tick = g_f.tickSize > 0.0 ? g_f.tickSize : g_f.point;
+      if(tick > 0.0 &&
+         (MathAbs(g_plan[idx].entry - g_tr[idx].entry) >= 0.5 * tick ||
+          MathAbs(g_plan[idx].sl    - g_tr[idx].sl)    >= 0.5 * tick ||
+          MathAbs(g_plan[idx].tp    - g_tr[idx].tp)    >= 0.5 * tick))
+         TradeModify(idx);
+      return;
+   }
+
+   //  Flat: one idea per signal, not one per bar.
+   if(!g_plan[idx].ok) return;
+   if(!g_plan[idx].market && !LimitSideOk(idx)) return;
+   if(g_tr[idx].atSignal == g_lane[idx].signal &&
+      g_tr[idx].atTrend  == g_lane[idx].trend) return;
+
+   int    dir   = g_plan[idx].dir;
+   bool   mkt   = g_plan[idx].market;
+   double entry = g_plan[idx].entry;
+   double sl    = g_plan[idx].sl;
+   double tp    = g_plan[idx].tp;
+   double lot   = g_plan[idx].lot;
+
+   if(!maySend) return;
 
    ulong ticket = 0;
-   if(!TradeSend(idx, dir, market, entry, lot, sl, tp, ticket))
-   {
-      g_tr[idx].state = TS_HOLD;
-      g_tr[idx].dir   = dir;
-      g_tr[idx].note  = "the broker rejected the order";
-      return;
-   }
+   if(!TradeSend(idx, dir, mkt, entry, lot, sl, tp, ticket)) return;
 
    g_tr[idx].dir      = dir;
    g_tr[idx].entry    = entry;
@@ -3249,24 +3490,16 @@ void TradeOnBar(int idx)
    g_tr[idx].lot      = lot;
    g_tr[idx].atTrend  = g_lane[idx].trend;
    g_tr[idx].atSignal = g_lane[idx].signal;
-   g_tr[idx].note     = "";
 
-   if(market)
+   if(mkt)
    {
-      //  Keep the plan on the row even if the position is not visible
-      //  yet; the next bar adopts it.  Never re-send in the meantime.
+      //  Adopt the fill.  A market request can publish its position a
+      //  moment later, and this lane must not send a second one.
       g_tr[idx].state  = TS_OPEN;
       g_tr[idx].ticket = 0;
+      g_tr[idx].until  = ServerNow() + 10;
       TradeAdopt(idx);
-      if(g_tr[idx].ticket == 0)
-      {
-         g_tr[idx].state = TS_OPEN;   // ticket 0 = waiting for the fill
-         g_tr[idx].entry = entry;
-         g_tr[idx].sl    = sl;
-         g_tr[idx].tp    = tp;
-         g_tr[idx].lot   = lot;
-         g_tr[idx].dir   = dir;
-      }
+      if(g_tr[idx].ticket == 0) g_tr[idx].state = TS_OPEN;
    }
    else
    {
@@ -3276,9 +3509,31 @@ void TradeOnBar(int idx)
    }
 
    PrintFormat("%s: %s %s at %s, stop %s, target %s, %.2f lots",
-               g_lane[idx].name, (market ? "market" : "limit"),
+               g_lane[idx].name, (mkt ? "market" : "limit"),
                SignalText(dir), DoubleToString(entry, g_f.digits),
                DoubleToString(sl, g_f.digits), DoubleToString(tp, g_f.digits), lot);
+}
+
+//------------------------------------------------------------------
+//  Once a second: the order as the terminal sees it
+//------------------------------------------------------------------
+//  Only reads.  The plan is not rebuilt and no order is touched, but a
+//  fill or a close shows up on the panel within a second instead of at
+//  the next bar close.
+void TradeRefresh()
+{
+   for(int i = 0; i < LANE_COUNT; i++) TradeSync(i);
+}
+
+//------------------------------------------------------------------
+//  One closed bar on one lane
+//------------------------------------------------------------------
+void TradeOnBar(int idx)
+{
+   TradeSync(idx);
+   UpdatePlan(idx);
+   TradeManage(idx, g_armed[idx]);
+   g_armed[idx] = true;
 }
 
 //------------------------------------------------------------------
@@ -3297,50 +3552,38 @@ string TradePriceCell(double price, double from, int digits)
 
 void TradeRow(int idx)
 {
-   string tf  = g_lane[idx].name;
-   string dirTxt = "--";
-   string entTxt = "--";
-   string slTxt  = "--";
-   string tpTxt  = "--";
-   string lotTxt = "--";
-   string stTxt  = TradeStateText(g_tr[idx].state);
-   color  stClr  = TradeStateColour(g_tr[idx].state);
+   string tf     = g_lane[idx].name;
+   string stTxt  = PlanStateText(idx);
+   color  stClr  = PlanStateColour(idx);
 
-   if(g_tr[idx].state == TS_HOLD)
-   {
-      dirTxt = (g_tr[idx].dir > 0 ? "BUY" : "SELL");
-      stClr  = CLR_DIM;
-   }
-   else if(g_tr[idx].state != TS_NONE)
-   {
-      dirTxt = (g_tr[idx].dir > 0 ? "BUY" : "SELL");
-      entTxt = DoubleToString(g_tr[idx].entry, g_f.digits);
-      slTxt  = TradePriceCell(g_tr[idx].sl, g_tr[idx].entry, g_f.digits);
-      tpTxt  = TradePriceCell(g_tr[idx].tp, g_tr[idx].entry, g_f.digits);
-      lotTxt = DoubleToString(g_tr[idx].lot, 2);
-   }
+   int    dir    = g_lane[idx].signal;
+   string dirTxt = (dir > 0 ? "BUY" : (dir < 0 ? "SELL" : "--"));
 
    string tip = "";
-   if(g_tr[idx].state == TS_PLAN)      tip = "A plan is ready but trading is off, so nothing was sent to the broker.";
-   else if(g_tr[idx].state == TS_HOLD) tip = "No plan: " + g_tr[idx].note + ".";
-   else if(g_tr[idx].state == TS_WAIT) tip = "A limit is waiting at the broker. It is cancelled when the trend changes, the signal flips or ends, or its validity runs out.";
-   else if(g_tr[idx].state == TS_OPEN) tip = "Position open. Stop and target are held at the broker.";
-   else if(g_lane[idx].signal == 0)    tip = "No BUY or SELL on this lane, so nothing is planned.";
-   else                                tip = "A direction exists but no plan has been built yet.";
+   if(!g_lane[idx].ready)
+      tip = "This lane has no signal yet: its history is still too shallow.";
+   else if(dir == 0)
+      tip = "No BUY or SELL on this lane, so nothing is planned.";
+   else if(!g_plan[idx].ok)
+      tip = "No plan: " + g_plan[idx].note + ". Nothing is placed on this lane.";
+   else if(g_plan[idx].market)
+      tip = "A complete plan at 3/3: the entry is at the market.";
+   else
+      tip = "A complete plan at 2/3: the entry price is a resting limit.";
 
-   //  A refused plan prints the reason in the space the numbers would
-   //  use.  Four dashes and HOLD would be a fact with no cause, which
-   //  is what makes a panel feel broken.
-   if(g_tr[idx].state == TS_HOLD)
+   //  A direction with no usable plan prints the reason where the
+   //  numbers would be.  Four dashes and HOLD would be a fact with no
+   //  cause, which is what makes a panel feel broken.
+   if(g_lane[idx].ready && dir != 0 && !g_plan[idx].ok)
    {
       string hT[4];
       color  hC[4];
       string hP[4];
 
-      hT[0] = " " + Pad(tf, 5);                    hC[0] = CLR_TEXT;
-      hT[1] = Pad(dirTxt, 5);                      hC[1] = SignalColour(g_tr[idx].dir);
-      hT[2] = Pad("no plan: " + g_tr[idx].note, 49); hC[2] = CLR_TEXT;
-      hT[3] = stTxt;                               hC[3] = stClr;
+      hT[0] = " " + Pad(tf, 5);                        hC[0] = CLR_TEXT;
+      hT[1] = Pad(dirTxt, 5);                          hC[1] = SignalColour(dir);
+      hT[2] = Pad("no plan: " + g_plan[idx].note, 49);  hC[2] = CLR_TEXT;
+      hT[3] = stTxt;                                   hC[3] = stClr;
 
       for(int i = 0; i < 4; i++) hP[i] = tip;
       hP[0] = "";
@@ -3349,12 +3592,25 @@ void TradeRow(int idx)
       return;
    }
 
+   string entTxt = "--";
+   string lotTxt = "--";
+   string slTxt  = "--";
+   string tpTxt  = "--";
+
+   if(g_plan[idx].ok)
+   {
+      entTxt = DoubleToString(g_plan[idx].entry, g_f.digits);
+      lotTxt = DoubleToString(g_plan[idx].lot, 2);
+      tpTxt  = TradePriceCell(g_plan[idx].tp, g_plan[idx].entry, g_f.digits);
+      slTxt  = TradePriceCell(g_plan[idx].sl, g_plan[idx].entry, g_f.digits);
+   }
+
    string segT[7];
    color  segC[7];
    string segP[7];
 
    segT[0] = " " + Pad(tf, 5);      segC[0] = CLR_TEXT;  segP[0] = "";
-   segT[1] = Pad(dirTxt, 5);        segC[1] = SignalColour(g_tr[idx].dir); segP[1] = tip;
+   segT[1] = Pad(dirTxt, 5);        segC[1] = SignalColour(dir); segP[1] = tip;
    segT[2] = Pad(entTxt, 9);        segC[2] = CLR_VALUE; segP[2] = tip;
    segT[3] = Pad(lotTxt, 6);        segC[3] = CLR_VALUE; segP[3] = tip;
    segT[4] = Pad(tpTxt, 17);        segC[4] = CLR_OK;    segP[4] = tip;
@@ -3379,13 +3635,194 @@ void TradeHeaderRow()
    segT[6] = "STATE";                segC[6] = CLR_SECTION;
 
    segP[0] = "";
-   segP[1] = "The direction of the plan on this lane.";
-   segP[2] = "The price the trade enters at: the market price for a 3/3 market order, "
-             "the resting price for a 2/3 limit.";
+   segP[1] = "The direction the signal is asking for on this lane.";
+   segP[2] = "Where the plan would enter: the market price at 3/3, "
+             "the resting price at 2/3.";
    segP[3] = "Size, from the risk budget and the stop distance, rounded down.";
    segP[4] = "The one target price. Distance in points, measured from the entry.";
    segP[5] = "The stop price. Distance in points, measured from the entry.";
-   segP[6] = "What this lane is doing right now.";
+   segP[6] = "PLAN: a complete plan exists. HOLD: a direction, but no usable plan. "
+             "-- : no signal on this lane.";
+
+   AddSegLineTip(segT, segC, segP);
+}
+
+//------------------------------------------------------------------
+//  Group 3 - the order at the broker
+//------------------------------------------------------------------
+string MoneyText(double money)
+{
+   string sign = (money < 0.0 ? "-" : "+");
+   return(sign + DoubleToString(MathAbs(money), 2));
+}
+
+//  Fixed-width money cell, so the exits line never moves a column when
+//  a value crosses a digit or a sign.  Empty when there is no number.
+string MoneyCell(bool have, double money)
+{
+   if(!have) return(Spaces(10));
+   return(Pad(" (" + MoneyText(money) + ")", 10));
+}
+
+//  What a price move is worth at this size.  Commission is not part of
+//  it: the terminal knows commission per deal, not per resting order.
+double MoneyForMove(double from, double to, double lot)
+{
+   if(from <= 0.0 || to <= 0.0 || lot <= 0.0) return(0.0);
+   if(g_f.tickSize <= 0.0 || g_f.tickValue <= 0.0) return(0.0);
+   return((to - from) / g_f.tickSize * g_f.tickValue * lot);
+}
+
+double TradeLegMoney(int dir, double entry, double level, double lot)
+{
+   if(dir > 0) return(MoneyForMove(entry, level, lot));
+   return(MoneyForMove(level, entry, lot));
+}
+
+int PointsBetween(double from, double to)
+{
+   double point = (g_f.point > 0.0) ? g_f.point : g_f.tickSize;
+   if(point <= 0.0) return(0);
+   return((int)MathRound((to - from) / point));
+}
+
+//  The price that has to be touched for this order's target or entry:
+//  a BUY is filled and closed on the Bid, a SELL on the Ask.
+double LivePriceFor(int dir)
+{
+   if(dir > 0 && g_f.bid > 0.0) return(g_f.bid);
+   if(dir < 0 && g_f.ask > 0.0) return(g_f.ask);
+   return(g_f.ask > 0.0 ? g_f.ask : g_f.bid);
+}
+
+void OpenTradeRow(int idx)
+{
+   string tf = g_lane[idx].name;
+
+   if(g_tr[idx].state == TS_NONE)
+   {
+      AddLine(" " + Pad(tf, 5) + "--", CLR_DIM);
+      return;
+   }
+
+   bool   open   = (g_tr[idx].state == TS_OPEN);
+   int    dir    = g_tr[idx].dir;
+   string kind   = (open ? "Open" : "Limit");
+   string dirTxt = (dir > 0 ? "BUY" : "SELL");
+
+   string pnlTxt = "--";
+   color  pnlClr = CLR_DIM;
+   if(open && g_tr[idx].ticket != 0)
+   {
+      pnlTxt = MoneyText(g_tr[idx].pnl);
+      pnlClr = (g_tr[idx].pnl > 0.0 ? CLR_OK : (g_tr[idx].pnl < 0.0 ? CLR_ALERT : CLR_DIM));
+   }
+
+   string kindTip = (open
+      ? "An open position. Its stop and target are held at the broker, so a signal "
+        "change never moves them."
+      : "A resting limit. It is repriced when the plan moves, and cancelled when the "
+        "plan dies or this lane is not allowed to trade.");
+   string pnlTip = (open
+      ? "Profit and swap at the broker, in the account currency. Commission is not included."
+      : "No profit until the limit fills.");
+
+   //  Line 1 - what it is, where it enters, how big, what it is worth
+   string segT[5];
+   color  segC[5];
+   string segP[5];
+
+   segT[0] = " " + Pad(tf, 5);                  segC[0] = CLR_TEXT; segP[0] = "";
+   segT[1] = Pad(kind + " " + dirTxt, 11);      segC[1] = (open ? CLR_OK : CLR_HOLD); segP[1] = kindTip;
+   segT[2] = "Entry " + Pad(DoubleToString(g_tr[idx].entry, g_f.digits), 9) + "   ";
+   segC[2] = CLR_VALUE;                          segP[2] = kindTip;
+   segT[3] = "Lot " + Pad(DoubleToString(g_tr[idx].lot, 2), 5) + "   ";
+   segC[3] = CLR_VALUE;                          segP[3] = kindTip;
+   segT[4] = "P/L " + PadL(pnlTxt, 9);           segC[4] = pnlClr; segP[4] = pnlTip;
+
+   AddSegLineTip(segT, segC, segP);
+
+   //  Line 2 - the quote, and how far away the next thing is
+   double ref  = LivePriceFor(dir);
+   string toLbl = (open ? "To TP " : "To Entry ");
+   double lvl   = (open ? g_tr[idx].tp : g_tr[idx].entry);
+   int    pts   = (int)MathAbs(PointsBetween(ref, lvl));
+
+   string qBid = (g_f.bid > 0.0 ? DoubleToString(g_f.bid, g_f.digits) : "--");
+   string qAsk = (g_f.ask > 0.0 ? DoubleToString(g_f.ask, g_f.digits) : "--");
+
+   string qT[2];
+   color  qC[2];
+   string qP[2];
+
+   qT[0] = "      Bid " + Pad(qBid, 9) + "   Ask " + Pad(qAsk, 9) + "   ";
+   qC[0] = CLR_DIM; qP[0] = "The broker's own quote for this symbol.";
+   qT[1] = toLbl + IntegerToString(pts) + " pts";
+   qC[1] = CLR_TEXT;
+   qP[1] = (open
+      ? "Points from the price this order would be closed at, to its target."
+      : "Points from the price this order would be filled at, to its entry.");
+   AddSegLineTip(qT, qC, qP);
+
+   //  Line 3 - the exits, what each is worth, and the unused slots
+   string tT[5];
+   color  tC[5];
+   string tP[5];
+
+   bool moneyOk = (g_f.tickSize > 0.0 && g_f.tickValue > 0.0);
+   double mTp = (moneyOk && g_tr[idx].tp > 0.0
+                 ? TradeLegMoney(dir, g_tr[idx].entry, g_tr[idx].tp, g_tr[idx].lot) : 0.0);
+   double mSl = (moneyOk && g_tr[idx].sl > 0.0
+                 ? TradeLegMoney(dir, g_tr[idx].entry, g_tr[idx].sl, g_tr[idx].lot) : 0.0);
+
+   string tpPrice = (g_tr[idx].tp > 0.0 ? DoubleToString(g_tr[idx].tp, g_f.digits) : "--");
+   string slPrice = (g_tr[idx].sl > 0.0 ? DoubleToString(g_tr[idx].sl, g_f.digits) : "--");
+
+   string exitTip = "What this order is worth if that price is reached, at this size. "
+                    "Commission is not included.";
+
+   tT[0] = "      TP " + Pad(tpPrice, 8);          tC[0] = CLR_OK;    tP[0] = "The one target price.";
+   tT[1] = MoneyCell(moneyOk && g_tr[idx].tp > 0.0, mTp);
+   tC[1] = CLR_DIM;                                 tP[1] = exitTip;
+   tT[2] = "  SL " + Pad(slPrice, 8);              tC[2] = CLR_ALERT; tP[2] = "The stop price.";
+   tT[3] = MoneyCell(moneyOk && g_tr[idx].sl > 0.0, mSl);
+   tC[3] = CLR_DIM;                                 tP[3] = exitTip;
+   tT[4] = " TP1 --  TP2 --";
+   tC[4] = CLR_DIM;
+   tP[4] = "One target only. A second target is not used, so these stay empty.";
+
+   AddSegLineTip(tT, tC, tP);
+}
+
+void OpenTradeHeaderRow()
+{
+   string cur = AccountInfoString(ACCOUNT_CURRENCY);
+   if(cur == "") cur = "--";
+
+   string left  = " Open Trade  (" + cur + ")";
+   string right = AutoTradeText();
+
+   int gap = 65 - StringLen(left) - StringLen(right);
+   if(gap < 2) gap = 2;
+
+   string tip = "";
+   if(!InpAutoTrade)
+      tip = "The master switch is off. No new order is sent, a resting limit is cancelled, "
+            "and an open position is left alone with its broker-side stop and target.";
+   else if(!BrokerAllowsTrade())
+      tip = "The master switch is on, but the terminal is not letting an expert send orders. "
+            "Turn on Algo Trading in the terminal; nothing can be sent until then.";
+   else
+      tip = "The EA may place orders on the lanes that are allowed to trade.";
+
+   string segT[3];
+   color  segC[3];
+   string segP[3];
+
+   segT[0] = left;          segC[0] = CLR_SECTION;
+   segP[0] = "The trade this EA holds at the broker, and what it is worth.";
+   segT[1] = Spaces(gap);   segC[1] = CLR_TEXT;    segP[1] = "";
+   segT[2] = right;         segC[2] = AutoTradeColour(); segP[2] = tip;
 
    AddSegLineTip(segT, segC, segP);
 }
@@ -3394,8 +3831,9 @@ void TradeHeaderRow()
 //  PANEL
 //==================================================================
 //  The layout follows the interface sketch in automate.md section 7.
-//  Group 1 is the lane table, group 2 is one trade row per lane and
-//  group 3 is the diary.  All three groups are always drawn: a row of
+//  Group 1 is the lane table, group 2 is the plan per lane, group 3
+//  is the order at the broker and group 4 is the diary.  Every group is
+//  always drawn: a row of
 //  dashes says plainly that nothing is happening on that lane, which is
 //  easier to read than a panel that changes height.  The frame is the
 //  same from stage to stage; only the values fill in as each stage is
@@ -3752,8 +4190,18 @@ void BuildPanel()
    TradeHeaderRow();
    for(int t = 0; t < LANE_COUNT; t++) TradeRow(t);
    AddLine("", CLR_TEXT);
+
    // ---------------------------------------------------------------
-   //  Group 3 - the diary.  Two rows of counts and one health line.
+   //  Group 3 - the order at the broker.  Same three lanes, same
+   //  order, so no legend.  A lane holds nothing until an order is
+   //  sent, so its row is one line of dashes rather than three.
+   // ---------------------------------------------------------------
+   OpenTradeHeaderRow();
+   for(int o = 0; o < LANE_COUNT; o++) OpenTradeRow(o);
+   AddLine("", CLR_TEXT);
+
+   // ---------------------------------------------------------------
+   //  Group 4 - the diary.  Two rows of counts and one health line.
    //  Order inside every block is M5 / M15 / M30, matching the table
    //  directly above, so no legend is printed.  Each block is padded
    //  to a fixed width, so the panel never widens as counts grow.
@@ -4202,6 +4650,7 @@ void Heartbeat()
 
    UpdateLanes();
    LogLanes();
+   TradeRefresh();
 
    ulong ms = GetTickCount();
    if(lastDraw != 0 && (ms - lastDraw) < DRAW_MIN_MS) return;
@@ -4245,6 +4694,10 @@ int OnInit()
    }
    for(int i = 0; i < LANE_COUNT; i++)
    {
+      PlanClear(i);
+      g_armed[i]     = false;
+      g_tr[i].pnl    = 0.0;
+      g_tr[i].until  = 0;
       g_tr[i].state  = TS_NONE;
       g_tr[i].dir    = 0;
       g_tr[i].entry  = 0.0;
@@ -4255,7 +4708,6 @@ int OnInit()
       g_tr[i].until  = 0;
       g_tr[i].atTrend  = 0;
       g_tr[i].atSignal = 0;
-      g_tr[i].note   = "";
    }
    for(int i = 0; i < LANE_COUNT; i++)
    {

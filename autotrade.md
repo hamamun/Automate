@@ -27,10 +27,12 @@ from a regression slope and the bandpass is kept as a logged comparison.
 - a regime label and how long *it* has lasted
 - three independent votes, a score, and a signed signal
 - one planned trade - entry, stop, a single target, size - and the rules that cancel it
+- that plan is sent when its lane is allowed, repriced while it rests, and cancelled when
+  it dies; an open position is left alone with its broker-side stop and target
 
-**Not built:** trailing stop, TP1/TP2, partial closes, live sending, and grading filled
-trades in the diary. The plan is built and shown; `TRADING_LIVE` is false, so no order can
-reach the broker.
+**Not built:** trailing stop (`Trailstop enable` is declared and does nothing yet), TP1/
+TP2, partial closes, and grading filled trades in the diary. Sending is live in the code:
+it is gated by the master input and by the terminal, not by a compile-time constant.
 
 ---
 
@@ -681,7 +683,7 @@ panel reports duration-so-far, not duration-remaining.
 AGE is gone. TREND and REGIME each carry the forward number instead, so one row
 answers the only question worth asking of a live panel: **how much longer**.
 
-The panel is built in three groups. All three are always visible: a row that reads
+The panel is built in four groups. All of them are always visible: a row that reads
 `--` is a statement that nothing is happening on that lane, and a panel that changes
 height every few minutes is harder to read than one that does not.
 
@@ -699,16 +701,28 @@ height every few minutes is harder to read than one that does not.
  M15  SELL 2460.00  0.01  2471.20  (1120)  2455.40  (460)   PLAN
  M30  --   --       --    --               --               --
 
- Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0        <- group 3
+ Open Trade  (USD)                                Autotrading: ON
+ M5   Open BUY   Entry 2461.35     Lot 0.02    P/L     +2.14
+      Bid 2461.10     Ask 2461.30     To TP 575 pts
+      TP 2467.10  (+11.50)   SL 2458.90  (-4.90)   TP1 --  TP2 --
+ M15  Limit SELL Entry 2462.40     Lot 0.01    P/L        --
+      Bid 2461.10     Ask 2461.30     To Entry 110 pts
+      TP 2471.20  (+8.80)    SL 2455.40  (-7.00)   TP1 --  TP2 --
+ M30  --
+
+ Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0        <- group 4
          all     S38/S31/S12    W0/W0/W0       L0/W0/L0
  Health: Cost Watch | Tweak: off
 ```
 
 **TRADE STATUS is gone from group 1.** It used to say `SIGNAL ONLY` on every row, which
-was true when nothing was sent. Now that each lane has a plan, the state lives on that
-lane's group-2 row - `OPEN`, `WAIT`, `PLAN`, `HOLD`, `--` - and a second copy up here
-would be the same fact twice. The fixed tables are 55 characters (group 1) and 65
-(group 2), so group 2 sets the width.
+was true when nothing was sent. A second copy up here would be the same fact twice. The
+fixed tables are 55 characters (group 1) and 65 (group 2), so group 2 sets the width.
+
+**Group 2 is the plan, and only the plan.** Its vocabulary is `PLAN`, `HOLD` and `--`.
+`OPEN` and `WAIT` left it in stage 4: they describe an order, and an order now has its own
+group below (`Open Trade`, section 16). The two are different facts - a lane can hold a
+position from an older plan while its plan has already moved on - so both stay.
 
 The trade row reads **TF, DIR, ENTRY, LOT, TP, SL, STATE** - size next to the entry it was
 sized from, then the two prices - and a refused plan prints its reason in the space the
@@ -964,3 +978,92 @@ so the panel and the file can never disagree.
   or lose. They are not repurposed to mean held and failed - see section 11.1.
 - **Small samples look decisive.** `DIARY_MIN_JUDGE` hides a comparison below 10 results
   rather than printing a percentage built from three.
+
+---
+
+## 16. Autotrading, as built
+
+### 16.1 The switches
+
+Five, all defaulting to `true`, all asked for by name:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `Autotrading (master switch)` | on | any order at all |
+| `Allow M5 autotrade` | on | lane 1 may place, reprice, cancel |
+| `Allow M15 autotrade` | on | lane 2 |
+| `Allow M30 autotrade` | on | lane 3 |
+| `Trailstop enable` | on | declared now; the trail engine is not built |
+
+The master off means no lane trades. A lane off means that lane places nothing and its
+resting limit is cancelled; its open position is untouched. Attaching sends nothing: the
+first send on a lane waits for one closed bar with the EA running, so attaching a chart is
+never itself an instruction to trade. The terminal has a veto of its
+own, and it is shown rather than swallowed: `Autotrading: OFF` (dim), `Autotrading: ON`
+(lime), `Autotrading: ON - terminal is blocking it` (red).
+
+### 16.2 Two records, not one
+
+```
+LanePlan  ok, dir, market, entry, sl, tp, lot, note   <- rebuilt every closed bar
+LaneTrade state, dir, entry, sl, tp, lot, ticket,
+          until, atTrend, atSignal, pnl              <- what the broker has
+```
+
+The plan is rebuilt on **every closed bar on every lane**, whether or not an order exists.
+That is what lets the panel say `HOLD` while an old position still runs: the plan moved on
+and the position did not. Nothing in the plan path closes, moves or alters a position.
+
+### 16.3 One closed bar
+
+1. `TradeSync` - read the terminal: filled, closed, still resting, gone.
+2. `UpdatePlan` - rebuild the plan from this lane's own bars.
+3. `TradeManage` - the only place that sends, modifies or cancels.
+
+| Situation | Action |
+|---|---|
+| first closed bar after attach | show the plan, manage a resting limit, send nothing |
+| master or lane off, or terminal blocking | cancel a resting limit; never a position |
+| position open | nothing at all |
+| limit rests, plan died - `HOLD`, flip, no signal, trend gate, 3 bars of that timeframe | cancel |
+| limit rests, plan now wants 3/3 market | cancel only; no market order on this bar |
+| limit rests, planned entry is on the wrong side of the quote | cancel - it is no longer a limit |
+| limit rests, entry/stop/target moved by half a tick or more | modify to the plan's three prices |
+| flat, plan valid, no order for this signal+trend yet | send: market at 3/3, limit at 2/3 |
+
+`atSignal`/`atTrend` keep one idea per signal, not one per bar. They are cleared when a
+limit is cancelled for a 3/3 upgrade, so a later bar may place the market order - never the
+same one, because a partial fill can race the delete.
+
+A cancel is not trusted on the reply alone: the lane clears only on `TRADE_RETCODE_DONE`,
+and until then the same order is retried on the next bar.
+
+### 16.4 The panel, once a second
+
+The order state is re-read every second (`TradeRefresh`) and the panel repaints at most
+once a second (`DRAW_MIN_MS`), never per tick. Group 3, `Open Trade`, is one line of dashes
+for a lane with nothing at the broker, otherwise three:
+
+```
+ Open Trade  (USD)                                Autotrading: ON
+ M5   Open BUY   Entry 2461.35     Lot 0.02    P/L     +2.14
+      Bid 2461.10     Ask 2461.30     To TP 575 pts
+      TP 2467.10  (+11.50)   SL 2458.90  (-4.90)   TP1 --  TP2 --
+ M15  Limit SELL Entry 2462.40     Lot 0.01    P/L        --
+      Bid 2461.10     Ask 2461.30     To Entry 110 pts
+      TP 2471.20  (+8.80)    SL 2455.40  (-7.00)   TP1 --  TP2 --
+ M30  --
+```
+
+- `P/L` is the broker's profit plus swap in the account currency. Commission is excluded:
+  the terminal knows it per deal, not per resting order.
+- `TP`/`SL` money is the value **if that price is reached**, at this size.
+- `To TP` / `To Entry` counts from the price the order is actually filled or closed at -
+  Bid for a BUY, Ask for a SELL.
+- `TP1 --  TP2 --` stays empty: one target only. A second target belongs to the trailing
+  stop, not to this build.
+
+### 16.5 Scope
+
+The EA's own orders only: one magic number per lane, `20261031 + lane index`. A manual
+trade has no magic and is invisible here - it is never modified, never closed, never shown.
