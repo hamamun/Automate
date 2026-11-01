@@ -54,13 +54,25 @@
 //|    close with the EA running, so attaching a chart is never    |
 //|    itself an instruction to trade.                             |
 //|                                                                |
+//|    A resting limit is also watched once a second, because      |
+//|    three of its reasons to die can happen between bars: the    |
+//|    switches, its own clock, and the market walking through     |
+//|    the price it rests at. It is cancelled there, not at the    |
+//|    next bar close. Nothing else is touched on that beat - no   |
+//|    send, no reprice, no open position.                         |
+//|                                                                |
+//|    A trade that closed in profit frees its lane: the plan is   |
+//|    still there, so the next closed bar may take the same idea  |
+//|    again when every gate passes. A stop-out keeps the idea     |
+//|    spent.                                                      |
+//|                                                                |
 //|  Five switches, on as asked: master autotrade, allow M5, allow |
 //|  M15, allow M30, and trailstop enable - declared here; the     |
 //|  trail engine not built yet. Three older switches stay off:    |
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.52"
+#property version   "1.54"
 #property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
 #property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
@@ -2380,11 +2392,14 @@ void DiaryTradeWrite(int lane, ulong ticket, string dirTxt, double lot,
 //  Grade one closed position.  False means "not yet" - the history for
 //  that ticket is not there, so nothing is counted and nothing is read
 //  as a result.
-bool DiaryTrade(int idx, ulong posTicket, int dir, double lot, datetime t)
+//  net is returned so the caller can act on how the trade closed.  This
+//  function only writes the record: it sits in the diary section, above
+//  the trade state, and must not reach into it.
+bool DiaryTrade(int idx, ulong posTicket, int dir, double lot, datetime t,
+                double &net)
 {
+   net = 0.0;
    if(idx < 0 || idx >= LANE_COUNT) return(false);
-
-   double net = 0.0;
    if(!TradeClosedMoney(posTicket, net)) return(false);
 
    //  Rounded to the cent before anything is decided, so the count, the
@@ -3453,9 +3468,11 @@ void TradeSync(int idx)
       //  graded.
       if(!here)
       {
-         //  Closed.  The trade is offered to the diary before the
-         //  record of it is cleared, so the grade carries the side and
-         //  the size it was placed with.
+         //  The trade is offered to the diary before the record of it
+         //  is cleared, so the grade carries the side and the size it
+         //  was placed with.  The grade decides whether this idea may be
+         //  traded again - see DiaryTrade - because that is the one
+         //  place where the closed money is actually known.
          if(g_grade[idx].ticket == 0)
          {
             g_grade[idx].ticket = g_tr[idx].ticket;
@@ -3464,8 +3481,9 @@ void TradeSync(int idx)
             g_grade[idx].tries  = 0;
          }
 
-         //  Keep the trend and signal it was traded on, so a signal
-         //  that never changed does not buy the same idea twice.
+         //  Until the money is read, the idea counts as spent.  That is
+         //  the safe side: a lane that waits one more second costs one
+         //  second, while a lane that is wrongly released buys again.
          g_tr[idx].atTrend  = g_lane[idx].trend;
          g_tr[idx].atSignal = g_lane[idx].signal;
          g_tr[idx].state  = TS_NONE;
@@ -3784,8 +3802,22 @@ void FlushGrades()
    {
       if(g_grade[i].ticket == 0) continue;
 
-      if(DiaryTrade(i, g_grade[i].ticket, g_grade[i].dir, g_grade[i].lot, TimeCurrent()))
+      double net = 0.0;
+      if(DiaryTrade(i, g_grade[i].ticket, g_grade[i].dir, g_grade[i].lot,
+                    TimeCurrent(), net))
       {
+         //  A winner frees the lane.  The trend and the signal are still
+         //  standing and the plan still builds, so the next closed bar
+         //  may place the same idea again if every gate passes.  A
+         //  stop-out, or a close that left nothing after costs, keeps
+         //  the idea spent: the lane does not buy the level it was just
+         //  wrong about.
+         if(net > 0.0 && g_tr[i].state == TS_NONE)
+         {
+            g_tr[i].atTrend  = 0;
+            g_tr[i].atSignal = 0;
+         }
+
          g_grade[i].ticket = 0;
          g_grade[i].tries  = 0;
          continue;
@@ -3803,12 +3835,81 @@ void FlushGrades()
    }
 }
 
-//  Only reads.  The plan is not rebuilt and no order is touched, but a
-//  fill or a close shows up on the panel within a second instead of at
-//  the next bar close.
+//------------------------------------------------------------------
+//  A resting limit is watched every second, not only on the bar
+//------------------------------------------------------------------
+//  Three things can change while a bar is still forming: the owner's
+//  switches, the clock, and the live quote.  Those are checked here.
+//  The three that cannot change before a bar closes - the signal, the
+//  trend and the plan itself - stay on the closed bar, where they
+//  belong; there is nothing to gain by reading them twice a second.
+//
+//  This touches an order in TS_WAIT and nothing else.  It never sends,
+//  never reprices, and never looks at an open position: a position's
+//  stop and target are the broker's to hold.
+void ManageRestingLimit(int idx)
+{
+   if(g_tr[idx].state != TS_WAIT) return;
+   if(g_tr[idx].ticket == 0) return;
+
+   //  The switches and the terminal's own permission are the owner's
+   //  acts, so they take effect at once rather than at the next bar.
+   if(!LaneAllowed(idx) || !BrokerAllowsTrade())
+   {
+      TradeRemove(idx, true);
+      return;
+   }
+
+   //  Nothing rests and nothing fills while the broker is shut, so
+   //  nothing is cancelled either.  This also covers a stale quote: a
+   //  market that is not simply open is never a price to judge by.
+   if(g_m.code != MS_OPEN) return;
+
+   //  Its own clock, set when it was placed: three periods of this lane.
+   //  Checked every second, so a limit on M30 gives up at 90 minutes and
+   //  not at the next M30 bar after that.
+   if(g_tr[idx].until > 0 && ServerNow() > g_tr[idx].until)
+   {
+      PrintFormat("%s: limit %s reached the end of its %d minutes, cancelling",
+                  g_lane[idx].name, DoubleToString(g_tr[idx].entry, g_f.digits),
+                  (int)(3 * PeriodSeconds(g_lane[idx].tf) / 60));
+      TradeRemove(idx);
+      return;
+   }
+
+   //  The price it rests at is no longer a limit against the live quote:
+   //  the market walked through the level the order was waiting for.
+   //  Its own entry is used, not the plan's, because that is the price
+   //  actually at the broker.
+   if(g_tr[idx].dir > 0 && g_f.ask > 0.0 && g_tr[idx].entry >= g_f.ask)
+   {
+      PrintFormat("%s: limit %s is no longer below the Ask %s, cancelling",
+                  g_lane[idx].name, DoubleToString(g_tr[idx].entry, g_f.digits),
+                  DoubleToString(g_f.ask, g_f.digits));
+      TradeRemove(idx);
+      return;
+   }
+
+   if(g_tr[idx].dir < 0 && g_f.bid > 0.0 && g_tr[idx].entry <= g_f.bid)
+   {
+      PrintFormat("%s: limit %s is no longer above the Bid %s, cancelling",
+                  g_lane[idx].name, DoubleToString(g_tr[idx].entry, g_f.digits),
+                  DoubleToString(g_f.bid, g_f.digits));
+      TradeRemove(idx);
+      return;
+   }
+}
+
+//  Only reads, plus the three live checks above.  The plan is not
+//  rebuilt and nothing is sent, but a fill, a close or a dead limit
+//  shows up within a second instead of at the next bar close.
 void TradeRefresh()
 {
-   for(int i = 0; i < LANE_COUNT; i++) TradeSync(i);
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      TradeSync(i);
+      ManageRestingLimit(i);
+   }
    FlushGrades();
 }
 
@@ -3847,6 +3948,13 @@ void TradeRow(int idx)
    int    dir    = g_lane[idx].signal;
    string dirTxt = (dir > 0 ? "BUY" : (dir < 0 ? "SELL" : "--"));
 
+   //  A lane that already traded this direction on this trend keeps the
+   //  latch set, and the panel has to say so: a complete plan with no
+   //  order under it looks like a fault otherwise.
+   bool spent = (g_tr[idx].state == TS_NONE && dir != 0 &&
+                 g_tr[idx].atSignal == g_lane[idx].signal &&
+                 g_tr[idx].atTrend  == g_lane[idx].trend);
+
    string tip = "";
    if(!g_lane[idx].ready)
       tip = "This lane has no signal yet: its history is still too shallow.";
@@ -3854,6 +3962,10 @@ void TradeRow(int idx)
       tip = "No BUY or SELL on this lane, so nothing is planned.";
    else if(!g_plan[idx].ok)
       tip = "No plan: " + g_plan[idx].note + ". Nothing is placed on this lane.";
+   else if(spent)
+      tip = "A complete plan, but this lane already traded this idea and kept "
+            "nothing from it. It waits for the signal or the trend to change "
+            "before taking it again.";
    else if(g_plan[idx].market)
       tip = "A complete plan at 3/3: the entry is at the market.";
    else
