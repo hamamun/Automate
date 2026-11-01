@@ -1092,11 +1092,40 @@ Why those three and no more: the switches, the clock and the quote are the only 
 can change between bars. The signal, the trend and the plan are written once per closed bar,
 so checking them ten times a second would read the same numbers and change nothing.
 
-`atSignal`/`atTrend` keep one idea per signal, not one per bar. They are cleared when a
-limit is cancelled for a 3/3 upgrade, so a later bar may place the market order - never the
-same one, because a partial fill can race the delete. They are **not** cleared when a limit
-dies of expiry or of a walked-through level: that idea has had its chance, and the lane
-waits for the trend or the signal to change before trying again.
+### 16.3a The idea latch
+
+`atSignal`/`atTrend` keep one idea per signal, not one per bar: a flat lane will not send
+while both still equal the values it traded. Without that latch the lane would re-enter on
+every bar for as long as the signal lasted.
+
+They are released in three places, and each has a reason:
+
+| Released when | Why |
+|---|---|
+| a limit is cancelled for a 3/3 upgrade | the idea is still good and wants a market entry; a later bar places it, never the same one, because a partial fill can race the delete |
+| a lane or the master switch is turned off | switching the lane back on must act on the plan as it stands, not wait for a new signal |
+| **a position closed in profit** | the idea was right and is still standing; the lane may take it again |
+
+**A winning close re-arms the lane.** When a position disappears it is queued for grading;
+`FlushGrades` reads its own deals (`DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION`), and above
+zero `atTrend` and `atSignal` are cleared to `0` and the lane is free. The release lives on
+that path and not in `TradeSync`, because the grading call is the one place where the money
+is actually known - `TradeSync` marks the idea spent until then, which is the safe side. The next **closed bar** re-runs every gate - the plan,
+the quote side, the switches, the market state - and places a fresh order if they pass. So
+a target hit at 14:07 is followed by a new order at 14:10 on M5, not at 14:07.
+
+**A losing close does not re-arm.** A stop-out, or a close flat after costs, keeps the idea
+spent and the lane waits for the signal or the trend to change. Buying back the level that
+was just wrong, on the same evidence, is how one bad bar becomes five.
+
+They are **not** cleared when a limit dies of expiry or of a walked-through level: that idea
+has had its chance, and the lane waits for the trend or the signal to change before trying
+again.
+
+The panel says so on hover: a `PLAN` row on a lane that already traded this idea reads *"A
+complete plan, but this lane already traded this idea and kept nothing from it."* The
+`STATE` column itself stays `PLAN`/`HOLD`/`--` as agreed - the hold is a property of the
+lane, not of the plan.
 
 A cancel is not trusted on the reply alone: the lane clears only on `TRADE_RETCODE_DONE`.
 Until then the same order is retried - on the next second, not the next bar.

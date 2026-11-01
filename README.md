@@ -318,6 +318,27 @@ cancel is never trusted on the first reply: the lane is only cleared once the br
 confirms the order is gone, and a cancel that is not confirmed is simply tried again on the
 next second.
 
+### One idea at a time, and when it is released
+
+A lane will not buy the same direction on the same trend twice in a row. It remembers the
+trend and the signal it traded, and stays quiet while both are unchanged — otherwise it
+would re-enter on every bar for as long as the signal lasted.
+
+**A winning close releases that hold.** If a trade closed in profit — the target, or any
+close that left money after swap and commission — the lane is free again. The trend and the
+signal are still standing, the plan still builds, and the **next closed bar** places a fresh
+order if every gate passes. The release is decided where the money is read, from the
+position's own deals, so it cannot be fooled by a floating figure a second before the close.
+
+**A losing close does not.** A stop-out keeps the idea spent, so the lane does not buy the
+level it was just wrong about. It waits for the signal or the trend to change.
+
+Being right about direction and still losing to costs counts as a loss here, because that is
+what the account did.
+
+The trade is closed, so the release is noticed within a second, but the re-entry itself is
+still a bar-close decision: a new order at the first second of the next bar.
+
 ### Autotrading status
 
 The heading of that table ends with one of three states:
@@ -397,8 +418,10 @@ python3 tools/preflight.py Automate.mq5
 Checks unbalanced braces and parentheses, duplicate file-scope declarations, duplicate
 functions, unresolved calls, argument counts, invalid struct fields, stray `input` lines,
 unused functions, non-ASCII text, whether every scan of the terminal's orders and positions
-compares the symbol, and whether the once-a-second path still only cancels limits. It does
-not replace MetaEditor — it only makes the cheap mistakes visible before you compile.
+compares the symbol, whether the once-a-second path still only cancels limits, and whether
+any global or `#define` is used above the line that declares it (MQL5 has no hoisting, and
+the compiler blames the use rather than the cause). It does not replace MetaEditor — it only
+makes the cheap mistakes visible before you compile.
 
 ## What to check while testing
 

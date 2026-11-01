@@ -146,6 +146,43 @@ bad_sec = [w for w in ('TradeSend', 'TradeModify', 'TS_OPEN') if w in sec]
 chk("the once-a-second path only cancels limits", not bad_sec,
     "found: " + str(bad_sec) if bad_sec else "")
 
+# MQL5 has no hoisting for variables: a global read above its declaration
+# is a compile error, and the message points at the use, not the cause.
+# Only names starting with g_ and every #define are checked - those are the
+# ones a function can be moved above by accident.
+lines_no_comment = []
+for raw in src.split('\n'):
+    ln = raw.split('//')[0]
+    ln = re.sub(r'"(\\.|[^"\\])*"', '""', ln)
+    lines_no_comment.append(ln)
+
+def first_use_line(name):
+    pat = re.compile(r'\b' + re.escape(name) + r'\b')
+    for i, ln in enumerate(lines_no_comment, start=1):
+        if pat.search(ln):
+            return i
+    return 0
+
+early = []
+for i, ln in enumerate(lines_no_comment, start=1):
+    st = ln.strip()
+    if st.startswith('#'):
+        continue
+    m = re.match(r'^(?:' + TYPE + r'|\w+)\s+(g_\w+)\s*(?:\[.*?\])?\s*(?:=|;)', st)
+    if not m:
+        continue
+    use = first_use_line(m.group(1))
+    if use and use < i:
+        early.append(f"{m.group(1)} used at line {use}, declared at {i}")
+for i, ln in enumerate(lines_no_comment, start=1):
+    m = re.match(r'^\s*#define\s+(\w+)', ln)
+    if not m:
+        continue
+    use = first_use_line(m.group(1))
+    if use and use < i:
+        early.append(f"{m.group(1)} used at line {use}, defined at {i}")
+chk("no global used before it is declared", not early, str(early))
+
 print(f"\nlines: {src.count(chr(10))+1} | functions: {len(fnames)} | file-scope vars: {len(decls)}")
 print("RESULT:", "ALL PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")
 sys.exit(0 if not fails else 1)
