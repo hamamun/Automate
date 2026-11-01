@@ -60,7 +60,7 @@
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.51"
+#property version   "1.52"
 #property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
 #property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
