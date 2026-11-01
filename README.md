@@ -261,6 +261,7 @@ The reasons it can give:
 
 | Reason | Why |
 |---|---|
+| `market closed` | the market is not simply open, so no plan is built at all |
 | `no price grid` | the symbol reports no tick size or point, so nothing can be priced |
 | `no live quote` | Ask or Bid is missing, so there is no price to build on |
 | `spread too wide` | the spread is past the gate, so the round trip costs too much |
@@ -269,7 +270,9 @@ The reasons it can give:
 | `no swing to hide the stop behind` | every trade needs confirmed structure behind its stop |
 | `stop on the wrong side` | the structure found is on the wrong side of the entry |
 | `stop inside the broker minimum` | the broker would reject a stop that close |
-| `not enough history for a target` | fewer than 30 replays of this setup exist yet |
+| `not enough history to measure a target` | too few closed bars on this timeframe to replay one |
+| `too few like this to measure a target` | fewer than 30 replays found a stop to measure from |
+| `measured target too small` | the median replay was stopped before it moved this way at all |
 | `target on the wrong side` | the opposing swing is behind the entry |
 | `target does not clear the spread` | the target would not pay for the round trip |
 | `target inside the broker minimum` | the broker would reject a target that close |
@@ -474,13 +477,17 @@ In the **Experts** tab:
 - **One target, no partial closes.** TP1/TP2 belong to the trailing stop. The broker gets
   entry, stop and target in a single request.
 - **A plan never invents a price.** If the structure a stop needs is not there, the lane
-  reads `HOLD` and says why. The same goes for a target with too little history: a refusal,
-  never an estimate.
+  reads `HOLD` and says why. The same goes for a target the replay cannot measure: a refusal
+  that names its reason, never an estimate.
 - **The same size for 2/3 and 3/3.** Score predicts how far price travels, not which way:
   median `|move|` measured 0.633 bars at 2/3 against 0.840 at 3/3. A stronger score does
   not earn a bigger position.
 - **The target is a median, not a promise.** 400 replayed bars, at least 30 cases of the
-  same setup, 50th percentile, then capped before the opposing swing.
+  same setup, 50th percentile, then capped before the opposing swing. When that median
+  comes back at **zero** - the replay was stopped before it moved this way even once - the
+  lane reads `HOLD` and says `measured target too small`, rather than putting a target on
+  the entry and calling it a plan. On a quiet lane that is the usual reason a 3/3 shows no
+  plan, and it is a measurement that ran and refused, not missing history.
 - **`W` and `L` are money, not prices.** A trade is a win when the position closed with
   more money than it opened with, after swap and commission. Being right about direction
   and still losing to costs counts as a loss, because that is what the account did.

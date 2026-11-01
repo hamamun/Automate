@@ -23,8 +23,9 @@
 //|      market entry at 3/3, or a limit resting on the nearest    |
 //|      confirmed swing at 2/3; a stop behind confirmed structure;|
 //|      and one target measured by replaying the same setup over  |
-//|      the lane's history. No structure, no trade - the panel    |
-//|      says which piece was missing;                             |
+//|      the lane's history - or refused when that replay mea-     |
+//|      sures nothing. No structure, no trade: the panel says     |
+//|      which piece was missing;                                  |
 //|    * sizes the plan from equity and the stop distance, rounded |
 //|      down, after checking the broker's lot and margin limits;  |
 //|    * sends it when the lane is allowed: a market order at 3/3, |
@@ -72,7 +73,7 @@
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.54"
+#property version   "1.55"
 #property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
 #property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
@@ -2953,8 +2954,12 @@ int PickFilling()
 //  The target: how far this lane actually travelled, before a stop of
 //  the same size, in the same direction, over the same horizon.
 //------------------------------------------------------------------
-double MeasureTarget(int idx, int dir, double riskPrice, double tick)
+double MeasureTarget(int idx, int dir, double riskPrice, double tick, string &why)
 {
+   why = "";
+   //  Unreachable from BuildPlan, which refuses a stop on the wrong
+   //  side first.  The caller falls back to the smallest of the three
+   //  refusals if it ever is reached, never to the history one.
    if(dir == 0 || riskPrice <= 0.0) return(0.0);
 
    int horizon = LaneHorizon(idx);
@@ -2963,7 +2968,8 @@ double MeasureTarget(int idx, int dir, double riskPrice, double tick)
 
    MqlRates r[];
    int n = CopyRates(_Symbol, g_lane[idx].tf, 1, need, r);
-   if(n < horizon + 120) return(0.0);
+   if(n < horizon + 120)
+   { why = "not enough history to measure a target"; return(0.0); }
 
    double samples[];
    int    cnt = 0;
@@ -3010,14 +3016,19 @@ double MeasureTarget(int idx, int dir, double riskPrice, double tick)
       cnt++;
    }
 
-   if(cnt < TP_MIN_CASES) return(0.0);
+   if(cnt < TP_MIN_CASES)
+   { why = "too few like this to measure a target"; return(0.0); }
 
    ArraySort(samples);
    int q = (int)MathFloor((double)(cnt - 1) * TP_QUANTILE);
    if(q < 0) q = 0;
    if(q >= cnt) q = cnt - 1;
 
-   return(samples[q] * riskPrice);
+   double dist = samples[q] * riskPrice;
+   if(dist <= 0.0)
+   { why = "measured target too small"; return(0.0); }
+
+   return(dist);
 }
 
 //------------------------------------------------------------------
@@ -3154,8 +3165,17 @@ bool BuildPlan(int idx, int dir, bool market, int &trendNow, int &signalNow,
    if(risk <= 0.0) { why = "stop on the wrong side"; return(false); }
 
    // ---- target ----------------------------------------------------
-   double dist = MeasureTarget(idx, dir, risk, tick);
-   if(dist <= 0.0) { why = "not enough history for a target"; return(false); }
+   //  A target of zero is not a small target, it is no target: the
+   //  median replay was stopped before it moved this way at all.  The
+   //  measurement says which of its three refusals happened, so the
+   //  panel cannot blame missing history for a measurement that ran.
+   string tWhy = "";
+   double dist = MeasureTarget(idx, dir, risk, tick, tWhy);
+   if(dist <= 0.0)
+   {
+      why = (tWhy != "" ? tWhy : "measured target too small");
+      return(false);
+   }
 
    tp = (dir > 0) ? SnapDown(entry + dist, tick) : SnapUp(entry - dist, tick);
 
