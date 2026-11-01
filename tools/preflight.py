@@ -102,6 +102,24 @@ dead = [f for f in set(fnames) if f not in ('OnInit','OnDeinit','OnTick','OnTime
 chk("no unused functions", not dead, str(sorted(dead)))
 chk("ascii only", all(ord(c) < 128 for c in src))
 
+# Cross-chart guard.  PositionsTotal() and OrdersTotal() return the whole
+# terminal; the magic number is the same on every chart.  A scan of either
+# list that does not also compare the symbol will adopt another chart's
+# trade.  Every such loop has to filter, and every request that acts on a
+# ticket has to check the symbol first.
+raw_lines = src.split('\n')
+bad_scans = []
+for ln, line in enumerate(raw_lines):
+    if 'PositionsTotal()' in line and 'for(' in line.replace(' ', ''):
+        window = '\n'.join(raw_lines[ln:ln + 8])
+        if 'POSITION_SYMBOL' not in window:
+            bad_scans.append(f"position scan at line {ln + 1} has no symbol filter")
+    if 'OrdersTotal()' in line and 'for(' in line.replace(' ', ''):
+        window = '\n'.join(raw_lines[ln:ln + 8])
+        if 'ORDER_SYMBOL' not in window:
+            bad_scans.append(f"order scan at line {ln + 1} has no symbol filter")
+chk("terminal scans filter by symbol", not bad_scans, str(bad_scans))
+
 print(f"\nlines: {src.count(chr(10))+1} | functions: {len(fnames)} | file-scope vars: {len(decls)}")
 print("RESULT:", "ALL PASSED" if not fails else f"{len(fails)} FAILURE(S): {fails}")
 sys.exit(0 if not fails else 1)

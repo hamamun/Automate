@@ -1079,8 +1079,9 @@ and until then the same order is retried on the next bar.
 
 ### 16.4 The panel, once a second
 
-The order state is re-read every second (`TradeRefresh`) and the panel repaints at most
-once a second (`DRAW_MIN_MS`), never per tick. Group 3, `Open Trade`, is one line of dashes
+The order state is re-read once a second and the panel repaints at most once a second
+(`DRAW_MIN_MS`), never per tick. Both now sit inside the same throttle in `Heartbeat`: the
+read used to sit above it, so it ran on every tick while the file claimed once a second. Group 3, `Open Trade`, is one line of dashes
 for a lane with nothing at the broker, otherwise three:
 
 ```
@@ -1115,3 +1116,21 @@ broker refused, but it should never have been asked). Both finders and both read
 A manual trade has no magic and is invisible here - it is never modified, never closed,
 never shown. A position found on another symbol is dropped without being graded, so one
 chart's trade can never appear in another chart's `W`/`L`.
+
+**How the fault was proven, rather than guessed.** The ETH panel showed
+`Entry 77658.57`, `TP 77674.21`, `SL 77512.13` - the BTC trade to the cent - next to
+`Bid 2263.14`, which is ETH. The row also read `To TP 7541107 pts`, and
+
+```
+(77674.21 - 2263.14) / 0.01 = 7 541 107
+```
+
+exactly, where `0.01` is the ETH point. One row, two symbols, and the arithmetic says
+which two. Nothing else in the EA can produce that number.
+
+**Four lines of log, read against it.** `adopted resting order 2778177742` on ETHUSDm, then
+`cancel not confirmed (10013)`, then BTCUSDm sent its market order, then `waiting order
+2778177742 is gone`. `10013` is *invalid request*: the terminal refused to remove an order
+that this chart cannot act on, because it is not on this symbol. The first reply from the
+broker was the warning; nothing in the EA was listening to it. Now the ticket is checked
+against `_Symbol` before any request is built, so that request is never sent.
