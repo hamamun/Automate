@@ -32,7 +32,9 @@
 //|      structure moves, cancels it when the plan dies, and       |
 //|      leaves an open position alone with its broker stop and    |
 //|      target;                                                   |
-//|    * records what the panel claimed in an observational diary. |
+//|    * records what the panel claimed in an observational diary, |
+//|      and grades every closed trade into it: side, size, and the|
+//|      net money after swap and commission, won or lost.         |
 //|                                                                |
 //|  AUTOTRADE IS ON.                                              |
 //|                                                                |
@@ -58,9 +60,9 @@
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.40"
-#property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, and the order the EA holds - with one master autotrade switch and one per timeframe."
-#property description "Three switches, all off by default. Trading is off at compile time, so no order can be sent. Attach to any chart and timeframe."
+#property version   "1.50"
+#property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
+#property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
 //==================================================================
 //  INTERNAL CONSTANTS  (deliberately not inputs)
@@ -2082,6 +2084,7 @@ void LogLanes()
 #define DIARY_KIND_SIG    "SIG"
 #define DIARY_KIND_TRD    "TRD"
 #define DIARY_KIND_REG    "REG"
+#define DIARY_KIND_TRADE  "TRADE"   // a filled trade, graded when it closes
 
 //==================================================================
 //  TRADE PLAN CONSTANTS
@@ -2108,8 +2111,8 @@ void LogLanes()
 struct DiaryTotals
 {
    int sToday;   // signal runs checked today
-   int wToday;   // trades won - no writer yet
-   int lToday;   // trades lost - no writer yet
+   int wToday;   // filled trades closed in profit today
+   int lToday;   // filled trades closed at a loss today
    int sAll;
    int wAll;
    int lAll;
@@ -2280,24 +2283,124 @@ void DiaryPushResult(string lane, string said, string did, bool hit)
    if(g_drN < DIARY_MAX_RECENT) g_drN++;
 }
 
-void DiaryWrite(int lane, string kind, int said, int did, bool hit, datetime t)
+//  One line out.  Every kind ends up here, so a failure is reported
+//  once and the row count can never drift from the file.
+bool DiaryAppend(string row)
 {
-   if(g_diary == INVALID_HANDLE) return;
-
-   string row = TimeToString(t, TIME_DATE | TIME_MINUTES) + "," +
-                g_lane[lane].name + "," + kind + "," +
-                IntegerToString(said) + "," + IntegerToString(did) + "," +
-                (hit ? "1" : "0") + "\r\n";
+   if(g_diary == INVALID_HANDLE) return(false);
 
    uint wrote = FileWriteString(g_diary, row);
    if(wrote == 0)
    {
       g_diaryNote = "last write failed";
       PrintFormat("Diary: write failed on %s (error %d)", g_diaryName, GetLastError());
-      return;
+      return(false);
    }
    FileFlush(g_diary);
    g_diaryRows++;
+   g_diaryNote = "saved";
+   return(true);
+}
+
+void DiaryWrite(int lane, string kind, int said, int did, bool hit, datetime t)
+{
+   if(g_diary == INVALID_HANDLE) return;
+
+   DiaryAppend(TimeToString(t, TIME_DATE | TIME_MINUTES) + "," +
+               g_lane[lane].name + "," + kind + "," +
+               IntegerToString(said) + "," + IntegerToString(did) + "," +
+               (hit ? "1" : "0") + "\r\n");
+}
+
+//------------------------------------------------------------------
+//  A filled trade, graded when it closes
+//------------------------------------------------------------------
+//  The money is read from the position's own deals: profit, swap and
+//  commission, so the verdict is what the account actually gained or
+//  lost.  Until the terminal has published that history the call
+//  reports false and the caller tries again a second later rather than
+//  inventing a break-even.
+bool TradeClosedMoney(ulong posTicket, double &net)
+{
+   net = 0.0;
+   if(posTicket == 0) return(false);
+   if(!HistorySelectByPosition(posTicket)) return(false);
+
+   int n = HistoryDealsTotal();
+   if(n <= 0) return(false);
+
+   for(int i = 0; i < n; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0) continue;
+      net += HistoryDealGetDouble(d, DEAL_PROFIT);
+      net += HistoryDealGetDouble(d, DEAL_SWAP);
+      net += HistoryDealGetDouble(d, DEAL_COMMISSION);
+   }
+   return(true);
+}
+
+//  Wins and losses are counted per lane, for today and for the file's
+//  whole life.  A trade that closed exactly flat is written down but
+//  counted as neither: it is not a win and it is not a loss.  Net is
+//  already rounded to the cent by the caller, so this test is on the
+//  same figure the panel shows.
+void DiaryTradeCount(int lane, double net, datetime t)
+{
+   if(lane < 0 || lane >= LANE_COUNT) return;
+   if(net == 0.0) return;
+
+   bool today = (g_diaryDay != 0 && DiaryDayKey(t) == g_diaryDay);
+
+   if(net > 0.0)
+   {
+      g_dt[lane].wAll++;
+      if(today) g_dt[lane].wToday++;
+   }
+   else
+   {
+      g_dt[lane].lAll++;
+      if(today) g_dt[lane].lToday++;
+   }
+}
+
+//  time,lane,TRADE,ticket,BUY,0.02,2.14,1   (the last field: won)
+void DiaryTradeWrite(int lane, ulong ticket, string dirTxt, double lot,
+                     double net, datetime t)
+{
+   if(g_diary == INVALID_HANDLE) return;
+
+   DiaryAppend(TimeToString(t, TIME_DATE | TIME_MINUTES) + "," +
+               g_lane[lane].name + "," + DIARY_KIND_TRADE + "," +
+               IntegerToString((long)ticket) + "," + dirTxt + "," +
+               DoubleToString(lot, 2) + "," + DoubleToString(net, 2) + "," +
+               (net > 0.0 ? "1" : "0") + "\r\n");
+}
+
+//  Grade one closed position.  False means "not yet" - the history for
+//  that ticket is not there, so nothing is counted and nothing is read
+//  as a result.
+bool DiaryTrade(int idx, ulong posTicket, int dir, double lot, datetime t)
+{
+   if(idx < 0 || idx >= LANE_COUNT) return(false);
+
+   double net = 0.0;
+   if(!TradeClosedMoney(posTicket, net)) return(false);
+
+   //  Rounded to the cent before anything is decided, so the count, the
+   //  panel and the stored line can never disagree by a fraction.
+   net = NormalizeDouble(net, 2);
+
+   string dirTxt = (dir > 0 ? "BUY" : "SELL");
+   string said   = dirTxt + " " + DoubleToString(lot, 2);
+   string did    = (net < 0.0 ? "-" : "+") + DoubleToString(MathAbs(net), 2);
+
+   DiaryTradeCount(idx, net, t);
+   DiaryPushResult(g_lane[idx].name, said, did, net > 0.0);
+   DiaryTradeWrite(idx, posTicket, dirTxt, lot, net, t);
+
+   PrintFormat("Diary: %s %s closed, net %s", g_lane[idx].name, said, did);
+   return(true);
 }
 
 void DiaryRecord(int lane, string kind, int said, int did, bool hit,
@@ -2323,12 +2426,29 @@ bool DiaryParse(string line)
       if(parts[1] == g_lane[i].name) lane = i;
    if(lane < 0) return(false);
 
+   datetime t = StringToTime(parts[0]);
+   if(t == 0) return(false);
+
+   if(parts[2] == DIARY_KIND_TRADE)
+   {
+      //  time,lane,TRADE,ticket,BUY,0.02,2.14,1
+      if(n < 8) return(false);
+
+      double lot = StringToDouble(parts[5]);
+      double net = StringToDouble(parts[6]);
+      bool   won = (parts[7] == "1");
+
+      string said = parts[4] + " " + DoubleToString(lot, 2);
+      string did  = (net < 0.0 ? "-" : "+") + DoubleToString(MathAbs(net), 2);
+
+      DiaryTradeCount(lane, net, t);
+      DiaryPushResult(g_lane[lane].name, said, did, won);
+      return(true);
+   }
+
    if(parts[2] != DIARY_KIND_SIG &&
       parts[2] != DIARY_KIND_TRD &&
       parts[2] != DIARY_KIND_REG) return(false);
-
-   datetime t = StringToTime(parts[0]);
-   if(t == 0) return(false);
 
    int  said = (int)StringToInteger(parts[3]);
    int  did  = (int)StringToInteger(parts[4]);
@@ -2540,12 +2660,18 @@ string DiaryL(bool today)
                        today ? g_dt[2].lToday : g_dt[2].lAll));
 }
 
-//  The diary grades signals.  It does not grade filled trades yet, so
-//  it says that instead of claiming there are none - orders exist now.
+//  The health line is the diary's own state, nothing else: is the file
+//  open, and did its last write land.
 string DiaryHealthText()
 {
    if(!g_diaryOk) return("off");
-   return("trades not graded");
+   return(g_diaryNote);
+}
+
+color DiaryHealthColour()
+{
+   if(!g_diaryOk) return(CLR_ALERT);
+   return(g_diaryNote == "saved" ? CLR_TEXT : CLR_ALERT);
 }
 
 string TweakText()
@@ -2576,9 +2702,9 @@ void BuildDiaryDetails(string &lines[], color &clrs[])
 
    if(g_drN == 0)
    {
-      DAdd(lines, clrs, " The diary checks what the panel said.", CLR_TEXT);
-      DAdd(lines, clrs, " Nothing has been checked yet.", CLR_TEXT);
-      DAdd(lines, clrs, " It writes one line when a claim is settled.", CLR_DIM);
+      DAdd(lines, clrs, " The diary checks what the panel said,", CLR_TEXT);
+      DAdd(lines, clrs, " and grades each closed trade.", CLR_TEXT);
+      DAdd(lines, clrs, " Nothing has settled yet.", CLR_DIM);
       DAdd(lines, clrs, "", CLR_TEXT);
    }
 
@@ -2629,9 +2755,15 @@ void BuildDiaryDetails(string &lines[], color &clrs[])
    }
 
    DAdd(lines, clrs, " COUNT OF RESULTS", CLR_SECTION);
-   DAdd(lines, clrs, "  M5 " + IntegerToString(g_dt[0].sAll) +
+   DAdd(lines, clrs, "  checked  M5 " + IntegerToString(g_dt[0].sAll) +
                      "   M15 " + IntegerToString(g_dt[1].sAll) +
                      "   M30 " + IntegerToString(g_dt[2].sAll), CLR_TEXT);
+   DAdd(lines, clrs, "  won      M5 " + IntegerToString(g_dt[0].wAll) +
+                     "   M15 " + IntegerToString(g_dt[1].wAll) +
+                     "   M30 " + IntegerToString(g_dt[2].wAll), CLR_OK);
+   DAdd(lines, clrs, "  lost     M5 " + IntegerToString(g_dt[0].lAll) +
+                     "   M15 " + IntegerToString(g_dt[1].lAll) +
+                     "   M30 " + IntegerToString(g_dt[2].lAll), CLR_ALERT);
    DAdd(lines, clrs, "", CLR_TEXT);
 
    DAdd(lines, clrs, " FILE", CLR_SECTION);
@@ -2689,6 +2821,17 @@ LanePlan g_plan[LANE_COUNT];
 //  False until this lane has seen one closed bar with the EA running.
 //  The first send waits for it; see TradeOnBar.
 bool g_armed[LANE_COUNT];
+
+//  A position that has closed but whose money is not readable yet.
+//  One per lane, because a lane never holds two positions.
+struct LaneGrade
+{
+   ulong    ticket;
+   int      dir;
+   double   lot;
+   int      tries;
+};
+LaneGrade g_grade[LANE_COUNT];
 
 //------------------------------------------------------------------
 //  Small helpers
@@ -3174,6 +3317,11 @@ void TradeAdopt(int idx)
    g_tr[idx].entry = PositionGetDouble(POSITION_PRICE_OPEN);
    g_tr[idx].dir   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 1 : -1);
    g_tr[idx].pnl   = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+
+   //  The idea is spent until the trend or the signal changes, exactly
+   //  as if this run had placed it itself.
+   g_tr[idx].atTrend  = g_lane[idx].trend;
+   g_tr[idx].atSignal = g_lane[idx].signal;
 }
 
 ulong FindLaneOrder(int idx)
@@ -3192,11 +3340,17 @@ ulong FindLaneOrder(int idx)
 //------------------------------------------------------------------
 void TradeSync(int idx)
 {
-   //  An order with this lane's magic and no record of it in this run:
-   //  a restart, or the EA re-attached.  Adopt it rather than place a
-   //  second one beside it.
+   //  A position or an order carrying this lane's magic and no record in
+   //  this run: a restart, or the EA re-attached.  Adopt it rather than
+   //  place a second one beside it.
    if(g_tr[idx].state == TS_NONE)
    {
+      if(FindLanePosition(idx) != 0)
+      {
+         TradeAdopt(idx);
+         return;
+      }
+
       ulong o = FindLaneOrder(idx);
       if(o == 0) return;
 
@@ -3232,8 +3386,19 @@ void TradeSync(int idx)
 
       if(!PositionSelectByTicket(g_tr[idx].ticket))
       {
-         //  Closed.  Keep the trend and signal it was traded on, so a
-         //  signal that never changed does not buy the same idea twice.
+         //  Closed.  The trade is offered to the diary before the
+         //  record of it is cleared, so the grade carries the side and
+         //  the size it was placed with.
+         if(g_grade[idx].ticket == 0)
+         {
+            g_grade[idx].ticket = g_tr[idx].ticket;
+            g_grade[idx].dir    = g_tr[idx].dir;
+            g_grade[idx].lot    = g_tr[idx].lot;
+            g_grade[idx].tries  = 0;
+         }
+
+         //  Keep the trend and signal it was traded on, so a signal
+         //  that never changed does not buy the same idea twice.
          g_tr[idx].atTrend  = g_lane[idx].trend;
          g_tr[idx].atSignal = g_lane[idx].signal;
          g_tr[idx].state  = TS_NONE;
@@ -3515,14 +3680,44 @@ void TradeManage(int idx, bool maySend)
 }
 
 //------------------------------------------------------------------
-//  Once a second: the order as the terminal sees it
+//  Once a second: the order, and the trades that closed
 //------------------------------------------------------------------
+//  A closed position is graded as soon as the terminal publishes its
+//  deals.  These are retried on the same one-second beat; a ticket that
+//  still has no history after ten tries is reported and dropped, never
+//  guessed at.
+void FlushGrades()
+{
+   for(int i = 0; i < LANE_COUNT; i++)
+   {
+      if(g_grade[i].ticket == 0) continue;
+
+      if(DiaryTrade(i, g_grade[i].ticket, g_grade[i].dir, g_grade[i].lot, TimeCurrent()))
+      {
+         g_grade[i].ticket = 0;
+         g_grade[i].tries  = 0;
+         continue;
+      }
+
+      g_grade[i].tries++;
+      if(g_grade[i].tries >= 10)
+      {
+         PrintFormat("%s: closed trade %s could not be graded, the terminal has no "
+                     "history for it", g_lane[i].name,
+                     IntegerToString((long)g_grade[i].ticket));
+         g_grade[i].ticket = 0;
+         g_grade[i].tries  = 0;
+      }
+   }
+}
+
 //  Only reads.  The plan is not rebuilt and no order is touched, but a
 //  fill or a close shows up on the panel within a second instead of at
 //  the next bar close.
 void TradeRefresh()
 {
    for(int i = 0; i < LANE_COUNT; i++) TradeSync(i);
+   FlushGrades();
 }
 
 //------------------------------------------------------------------
@@ -3531,6 +3726,7 @@ void TradeRefresh()
 void TradeOnBar(int idx)
 {
    TradeSync(idx);
+   FlushGrades();
    UpdatePlan(idx);
    TradeManage(idx, g_armed[idx]);
    g_armed[idx] = true;
@@ -4208,9 +4404,10 @@ void BuildPanel()
    // ---------------------------------------------------------------
    string tS = "How many signal runs the diary has checked. Each run is "
                "counted once, 3 bars after the panel first put a figure on it.";
-   string tW = "Wins. Zero until filled trades are graded: the diary "
-               "checks what the panel said, not trades.";
-   string tL = "Losses. Zero until filled trades are graded.";
+   string tW = "Filled trades that closed in profit, after swap and commission. "
+               "Graded on the lane that placed the trade.";
+   string tL = "Filled trades that closed at a loss, after swap and commission. "
+               "A trade that closed exactly flat is written down but counted as neither.";
 
    color cS = (g_diaryOk ? CLR_VALUE : CLR_DIM);
 
@@ -4219,8 +4416,8 @@ void BuildPanel()
    string sP[4];
    sT[0] = " Diary   today   ";              sC[0] = CLR_LABEL; sP[0] = "";
    sT[1] = Pad(DiaryS(true),  DIARY_BLK_W);  sC[1] = cS;        sP[1] = tS;
-   sT[2] = Pad(DiaryW(true),  DIARY_BLK_W);  sC[2] = CLR_DIM;   sP[2] = tW;
-   sT[3] = DiaryL(true);                     sC[3] = CLR_DIM;   sP[3] = tL;
+   sT[2] = Pad(DiaryW(true),  DIARY_BLK_W);  sC[2] = CLR_OK;    sP[2] = tW;
+   sT[3] = DiaryL(true);                     sC[3] = CLR_ALERT; sP[3] = tL;
    AddSegLineTip(sT, sC, sP);
 
    string aT[4];
@@ -4228,18 +4425,22 @@ void BuildPanel()
    string aP[4];
    aT[0] = "         all     ";              aC[0] = CLR_LABEL; aP[0] = "";
    aT[1] = Pad(DiaryS(false), DIARY_BLK_W);  aC[1] = cS;        aP[1] = tS;
-   aT[2] = Pad(DiaryW(false), DIARY_BLK_W);  aC[2] = CLR_DIM;   aP[2] = tW;
-   aT[3] = DiaryL(false);                    aC[3] = CLR_DIM;   aP[3] = tL;
+   aT[2] = Pad(DiaryW(false), DIARY_BLK_W);  aC[2] = CLR_OK;    aP[2] = tW;
+   aT[3] = DiaryL(false);                    aC[3] = CLR_ALERT; aP[3] = tL;
    AddSegLineTip(aT, aC, aP);
 
    string hT[4];
    color  hC[4];
    string hP[4];
    hT[0] = " Health: ";                      hC[0] = CLR_LABEL; hP[0] = "";
-   hT[1] = DiaryHealthText();                hC[1] = (g_diaryOk ? CLR_TEXT : CLR_ALERT);
-   hP[1] = (g_diaryOk
-            ? "Advisory only. Nothing here ever gates a signal, a stop, a target or a size."
-            : "The diary could not open its own file. " + g_diaryNote);
+   hT[1] = DiaryHealthText();                hC[1] = DiaryHealthColour();
+   hP[1] = (!g_diaryOk
+            ? "The diary could not open its own file. " + g_diaryNote
+            : (g_diaryNote == "saved"
+               ? "The file is open and its last write landed. Advisory only: nothing here "
+                 "ever gates a signal, a stop, a target or a size."
+               : "The last line could not be written, so it is on the panel but not in "
+                 "the file."));
    hT[2] = " | Tweak: ";                     hC[2] = CLR_LABEL; hP[2] = "";
    hT[3] = TweakText();                      hC[3] = CLR_TEXT;
    hP[3] = "The tweak switch. On means one bounded change is armed. "
@@ -4695,7 +4896,11 @@ int OnInit()
    for(int i = 0; i < LANE_COUNT; i++)
    {
       PlanClear(i);
-      g_armed[i]     = false;
+      g_armed[i]        = false;
+      g_grade[i].ticket = 0;
+      g_grade[i].dir    = 0;
+      g_grade[i].lot    = 0.0;
+      g_grade[i].tries  = 0;
       g_tr[i].pnl    = 0.0;
       g_tr[i].until  = 0;
       g_tr[i].state  = TS_NONE;

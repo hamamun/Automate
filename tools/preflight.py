@@ -53,8 +53,10 @@ GetTickCount AccountInfoInteger AccountInfoString TerminalInfoInteger MQLInfoInt
 TextSetFont TextGetSize MathSqrt MathCos MathExp MathFloor MathPow
 ArrayInitialize PeriodSeconds iTime CopyClose CopyHigh CopyLow ArrayCopy
 FileOpen FileClose FileReadString FileWriteString FileFlush FileIsEnding FileSeek
-FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringToTime StringTrimRight
+FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringToDouble
+StringToTime StringTrimRight
 OrderSend OrderSelect OrderGetTicket OrdersTotal OrderGetDouble OrderGetInteger OrderCalcMargin
+HistorySelectByPosition HistoryDealsTotal HistoryDealGetTicket HistoryDealGetDouble
 PositionSelectByTicket AccountInfoDouble
 PositionGetDouble PositionGetInteger PositionGetTicket PositionsTotal ZeroMemory NormalizeDouble
 CopyRates""".split())

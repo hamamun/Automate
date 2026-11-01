@@ -1,6 +1,6 @@
 # Autotrade — design record
 
-**Status: design record, updated after measurement. Stages 1 to 3 are implemented.**
+**Status: design record, updated after measurement. Stages 1 to 4 are implemented.**
 
 This file records the decisions taken while planning stage 2 (trend, regime, score,
 signal) and stage 3 (entry, stop, target, size), and the reasoning behind each one. It sits alongside `automate.md`, which remains
@@ -10,7 +10,7 @@ decision and says why.
 Stage 1 (discovery, self-configuration, market and session status) is built, merged and
 verified in MetaEditor with 0 errors. Stage 2 is built in the same file and carries TREND,
 REGIME, SCORE and SIGNAL. Stage 3 adds the plan: one entry, stop, target and size per
-lane, with trading off at compile time.
+lane. Stage 4 sends it, follows it, and grades every closed trade into the diary.
 
 Sections 5, 7, 9 and 10 were rewritten after the trend filter was measured rather than
 argued about. What changed and why is in section 10.4 - the short version is that the
@@ -29,10 +29,11 @@ from a regression slope and the bandpass is kept as a logged comparison.
 - one planned trade - entry, stop, a single target, size - and the rules that cancel it
 - that plan is sent when its lane is allowed, repriced while it rests, and cancelled when
   it dies; an open position is left alone with its broker-side stop and target
+- every filled trade is graded when it closes: won or lost, in money, into the diary
 
 **Not built:** trailing stop (`Trailstop enable` is declared and does nothing yet), TP1/
-TP2, partial closes, and grading filled trades in the diary. Sending is live in the code:
-it is gated by the master input and by the terminal, not by a compile-time constant.
+TP2, partial closes. Sending is live in the code: it is gated by the master input and by
+the terminal, not by a compile-time constant.
 
 ---
 
@@ -744,15 +745,17 @@ still 60 characters, inside the 67-character table.
 3 bars after the panel first put a durability figure on it - because consecutive claims
 from the same run overlap and would count the same evidence twice.
 
-**W and L mean trades, and nothing else.** Filled trades are not graded yet, so both
-print as zero. They are not repurposed to mean "claim held" or "claim failed" first:
-a letter that changes meaning halfway through a file is a letter that cannot be trusted.
-Claim quality - whether our own durability and life figures were honest - is read in the
-details panel (§11.5), which is what it is for.
+**W and L mean trades, and nothing else.** They count filled trades of the EA's own, on
+the lane that placed them, and they move when a trade closes - a win when the closed
+position made money after swap and commission, a loss when it lost money. §15.1a is the
+rule in full. They are not repurposed to mean "claim held" or "claim failed": a letter
+that changes meaning halfway through a file is a letter that cannot be trusted. Claim
+quality - whether our own durability and life figures were honest - is read in the details
+panel (§11.5), which is what it is for.
 
-`Health:` carries the trade diagnostics (cost, score, box, chop) once there are enough
-closed trades, and `Tweak:` mirrors the switch in §6.3. Both are advisory: neither ever
-gates a signal, a stop, a target or a size.
+`Health:` states what the diary file is doing - `saved`, `last write failed`, or `off`
+when it could not be opened - and `Tweak:` mirrors the switch in §6.3. Both are advisory:
+neither ever gates a signal, a stop, a target or a size.
 
 ### 11.2 How the two numbers relate
 
@@ -932,18 +935,42 @@ the estimate, so alignment cannot break.
 
 ### 15.1 What it records
 
-Three kinds of claim, and nothing else. A claim starts only when the panel actually
-showed a number, so nothing is ever graded that was never said.
+Four kinds of claim, and nothing else. A claim starts only when the panel actually
+showed a number or an order, so nothing is ever graded that was never said.
 
 | Kind | Claimed when | Settled when | Stored as |
 |---|---|---|---|
 | `SIG` | a run shows a durability figure | `SIGNAL_DURA_BARS` later | said `22`, did `1` or `0` |
 | `TRD` | a trend run first has a total-life estimate | the run ends | said and actual bars |
 | `REG` | a regime run first has a total-life estimate | the run ends | said and actual bars |
+| `TRADE` | a position is open | that position closes | side, lot, net money, won |
+
+### 15.1a How a trade is graded
+
+The grade is money, not points, and not direction. When the EA sees a position it
+placed disappear, it sums `DEAL_PROFIT + DEAL_SWAP + DEAL_COMMISSION` over every deal of
+that position, through `HistorySelectByPosition`. That sum is what the account gained or
+lost, so:
+
+| Net | Counted as |
+|---|---|
+| above zero | a win on that lane, `W` today and `W` all |
+| below zero | a loss on that lane, `L` today and `L` all |
+| exactly zero | written down, counted as neither |
+
+Until the terminal publishes the deals, `HistorySelectByPosition` returns nothing and the
+grade is *deferred*, not guessed: the ticket is retried once a second for ten seconds, and
+then reported in the Experts log and dropped. No trade is ever written as a break-even
+because the history had not arrived.
+
+Only the EA's own positions are graded - one magic per lane. A manual trade has no magic
+and never appears in `W` or `L`.
 
 ### 15.2 When a line is written
 
-Only when a claim settles. Nothing is written per bar, and nothing is written on attach.
+Only when a claim settles. Nothing is written per bar, nothing is written on attach, and
+nothing is written when an order is placed - only when a trade has closed and its money is
+readable.
 
 A verdict of `close` is used for the two length claims: within `max(2 bars, said / 4)`.
 That is a stated tolerance, not a discovered one - it exists so the RECENT list has a
@@ -956,7 +983,13 @@ Automate_Diary_<account>_<symbol>.csv      (FILE_COMMON, local in the tester)
 # Automate diary v1 - one line per settled claim
 2026.10.31 14:35,M5,SIG,22,1,1
 2026.10.31 15:10,M5,TRD,30,26,0
+2026.11.01 14:35,M5,TRADE,123456789,BUY,0.02,2.14,1
 ```
+
+The `TRADE` line carries two fields more than the others - the position ticket and the
+money - because a trade has to be identifiable: that ticket is what stops the same trade
+being counted twice. The three older kinds keep their six fields, so a file written by an
+earlier build still loads.
 
 Append only. The file is opened exclusively for the life of the EA, so a second chart on
 the same symbol cannot write to it and shows `Health: off` instead. A line that does not
@@ -974,8 +1007,14 @@ so the panel and the file can never disagree.
   is never lost. At most one claim per lane is affected.
 - **Regime claims are rare.** A regime run can last a day, so `REG` lines arrive slowly.
   That is the run being long, not the diary being broken.
-- **`W` and `L` stay zero.** Filled trades are not graded yet, so there is nothing to win
-  or lose. They are not repurposed to mean held and failed - see section 11.1.
+- **A trade closed while the EA was not running is not graded.** The grade is taken when
+  the EA sees its own position disappear. If the chart was closed or the terminal was off
+  at that moment, no line is written and no count moves; that trade is simply not in the
+  record. This matches the rule above: the diary grades what the panel was there to show.
+- **Graded lines survive a restart.** `W` and `L` are rebuilt by reading the file at
+  attach, and a ticket is graded once, so nothing is counted twice.
+- **A break-even trade is written but not counted.** With commission in the sum it is rare,
+  and calling it a win would be a lie in one direction or the other.
 - **Small samples look decisive.** `DIARY_MIN_JUDGE` hides a comparison below 10 results
   rather than printing a percentage built from three.
 

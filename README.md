@@ -30,25 +30,43 @@ an input.
 ## The diary
 
 Every signal run is checked once, three bars later, and the result is written to one file
-per account and symbol. Trend and regime runs are checked when they end. The diary only
-ever watches: it sends nothing, and nothing it stores is read back by the signal engine.
+per account and symbol. Trend and regime runs are checked when they end. A filled trade is
+graded when it closes. The diary only ever watches: it sends nothing, and nothing it
+stores is read back by the signal engine.
 
 ```
- Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
-         all     S38/S31/S12    W0/W0/W0       L0/W0/L0
- Health: trades not graded | Tweak: off
+ Diary   today   S2/S1/S0       W1/W0/W0       L0/W1/W0
+         all     S38/S31/S12    W4/W2/W1       L1/W3/W0
+ Health: saved | Tweak: off
 ```
 
-`S` counts signals and the counts are live. `W` and `L` mean **filled trades**, so they read
-0: the diary grades signals today, and trade grading arrives with the trailing stop.
+| Column | Means |
+|---|---|
+| `S` | signal runs the diary has checked |
+| `W` | filled trades that closed **in profit**, after swap and commission |
+| `L` | filled trades that closed **at a loss**, after swap and commission |
+
+`W` and `L` are counted on the lane that placed the trade, and they are read back from the
+file at attach, so they survive a restart. A trade that closed exactly flat is written down
+but counted as neither.
+
+Each graded trade is one line in the file:
+
+```
+2026.11.01 14:35,M5,TRADE,123456789,BUY,0.02,2.14,1
+```
+
+time, lane, `TRADE`, position ticket, side, lot, net money, won. The money is the sum of
+profit, swap and commission on every deal of that position, so it is what the account
+actually gained or lost — not an estimate, and not the broker's floating figure.
 
 | Stage | State | What it added |
 |---|---|---|
 | 1 | merged | symbol discovery, self-classification, self-configuration, market status, named sessions |
 | 2 | merged | per-lane TREND, REGIME, SCORE and SIGNAL on M5 / M15 / M30, with a measured forward horizon on trend and regime |
 | 3 | merged | one planned trade per lane — entry, stop, target and size — in its own table |
-| 4 | **this build** | one master and three per-lane switches; the plan is sent, repriced and cancelled; a second table shows the order at the broker |
-| 5 | not started | trailing stop, TP1/TP2, grading filled trades in the diary |
+| 4 | **this build** | one master and three per-lane switches; the plan is sent, repriced and cancelled; a second table shows the order at the broker; every closed trade is graded into the diary |
+| 5 | not started | trailing stop, TP1/TP2 |
 
 Design decisions and the measurements behind them are recorded in
 [autotrade.md](autotrade.md).
@@ -89,9 +107,9 @@ Design decisions and the measurements behind them are recorded in
       TP 2471.20  (+8.80)    SL 2455.40  (-7.00)   TP1 --  TP2 --
  M30  --
 
- Diary   today   S2/S1/S0       W0/W0/W0       L0/W0/L0
-         all     S38/S31/S12    W0/W0/W0       L0/W0/L0
- Health: trades not graded | Tweak: off
+ Diary   today   S2/S1/S0       W1/W0/W0       L0/W1/W0
+         all     S38/S31/S12    W4/W2/W1       L1/W3/W0
+ Health: saved | Tweak: off
 ```
 
 Every line starts with one space. After it, the lane table puts TF / TREND / REGIME / SCORE
@@ -393,6 +411,11 @@ On the chart:
   when the master switch is on and MT5's Algo Trading is off.
 - With a lane switched off, its row in `Open Trade` is dashes and its resting limit is
   gone; a position it already held keeps running.
+- Close a trade — let the stop or the target take it — and within a second the diary's `W`
+  or `L` on that lane moves by one, and the Experts tab prints
+  `Diary: M5 BUY 0.02 closed, net +2.14`.
+- The diary's `Health:` line reads `saved`. `last write failed` or `off` in red means the
+  file is not being written.
 
 In the **Experts** tab:
 
@@ -420,8 +443,16 @@ In the **Experts** tab:
   not earn a bigger position.
 - **The target is a median, not a promise.** 400 replayed bars, at least 30 cases of the
   same setup, 50th percentile, then capped before the opposing swing.
-- **`W` and `L` still read 0.** The diary grades signals today; filled trades are not
-  graded yet, and nothing else is counted as a win or a loss.
+- **`W` and `L` are money, not prices.** A trade is a win when the position closed with
+  more money than it opened with, after swap and commission. Being right about direction
+  and still losing to costs counts as a loss, because that is what the account did.
+- **A trade closed while the EA was not running is not graded.** The grade is taken when
+  the EA sees its position disappear; if the chart was closed or the terminal was off at
+  that moment, the line is never written and the counts do not move. Graded lines in the
+  file are read back at attach, so what has already been written is never lost — and a
+  trade is never counted twice.
+- **Break-even is neither a win nor a loss.** A position that closed exactly flat is
+  written down and left out of both counts.
 - **No predicted switch bar.** `6/30%L` is a median remaining length from that lane's own
   history, never a date. First-passage time, OU half-life, Markov dwell and Ehlers cycle all
   return a *duration*, never a date — and with no drift the expected first-passage time is
@@ -460,5 +491,4 @@ In the **Experts** tab:
 ## Next stage (not in this build)
 
 The trailing stop — the `Trailstop enable` switch is already there, with nothing behind it
-yet — and with it TP1/TP2 and partial closes. Grading filled trades goes into the diary at
-the same time, so `W` and `L` stop reading 0. The self-tweak stays declared and empty.
+yet — and with it TP1/TP2 and partial closes. The self-tweak stays declared and empty.
