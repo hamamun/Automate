@@ -57,7 +57,7 @@ FileDelete GetLastError StringReplace StringGetCharacter StringToInteger StringT
 StringToTime StringTrimRight
 OrderSend OrderSelect OrderGetTicket OrdersTotal OrderGetDouble OrderGetInteger OrderCalcMargin
 HistorySelectByPosition HistoryDealsTotal HistoryDealGetTicket HistoryDealGetDouble
-PositionSelectByTicket AccountInfoDouble
+PositionSelectByTicket PositionGetString OrderGetString AccountInfoDouble
 PositionGetDouble PositionGetInteger PositionGetTicket PositionsTotal ZeroMemory NormalizeDouble
 CopyRates""".split())
 calls = set(re.findall(r'(\w+)\s*\(', s))

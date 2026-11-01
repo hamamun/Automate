@@ -60,7 +60,7 @@
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.50"
+#property version   "1.51"
 #property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
 #property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
@@ -3285,12 +3285,19 @@ void TradeRemove(int idx, bool clearIdea = false)
    PrintFormat("%s: cancel not confirmed (%d)", g_lane[idx].name, res.retcode);
 }
 
+//  The magic says which lane, but not which symbol: every chart runs
+//  the same code and the same magic numbers.  PositionsTotal() and
+//  OrdersTotal() return the whole terminal, so a search that only
+//  compares magic finds another chart's trade and this chart then
+//  reports somebody else's order as its own.  The symbol has to be part
+//  of the test.
 ulong FindLanePosition(int idx)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) == (long)LaneMagic(idx)) return(t);
    }
    return(0);
@@ -3330,6 +3337,7 @@ ulong FindLaneOrder(int idx)
    {
       ulong t = OrderGetTicket(i);
       if(t == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
       if(OrderGetInteger(ORDER_MAGIC) == (long)LaneMagic(idx)) return(t);
    }
    return(0);
@@ -3384,7 +3392,23 @@ void TradeSync(int idx)
          return;
       }
 
-      if(!PositionSelectByTicket(g_tr[idx].ticket))
+      bool here = PositionSelectByTicket(g_tr[idx].ticket);
+      bool ours = (here && PositionGetString(POSITION_SYMBOL) == _Symbol);
+
+      //  Resolves to another symbol: it was never one of ours, so forget
+      //  it.  Grading it here would put somebody else's trade in this
+      //  chart's diary.
+      if(here && !ours)
+      {
+         g_tr[idx].state  = TS_NONE;
+         g_tr[idx].ticket = 0;
+         g_tr[idx].pnl    = 0.0;
+         return;
+      }
+
+      //  Gone entirely: it closed while we were watching, so it is
+      //  graded.
+      if(!here)
       {
          //  Closed.  The trade is offered to the diary before the
          //  record of it is cleared, so the grade carries the side and
@@ -3417,7 +3441,8 @@ void TradeSync(int idx)
 
    if(g_tr[idx].state == TS_WAIT)
    {
-      if(OrderSelect(g_tr[idx].ticket))
+      if(OrderSelect(g_tr[idx].ticket) &&
+         OrderGetString(ORDER_SYMBOL) == _Symbol)
       {
          g_tr[idx].entry = OrderGetDouble(ORDER_PRICE_OPEN);
          g_tr[idx].sl    = OrderGetDouble(ORDER_SL);

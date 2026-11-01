@@ -1104,5 +1104,14 @@ for a lane with nothing at the broker, otherwise three:
 
 ### 16.5 Scope
 
-The EA's own orders only: one magic number per lane, `20261031 + lane index`. A manual
-trade has no magic and is invisible here - it is never modified, never closed, never shown.
+The EA's own orders only: one magic number per lane, `20261031 + lane index`, **and this
+chart's symbol**. The symbol is part of the test because every chart runs the same code and
+the same magic numbers, while `PositionsTotal()` and `OrdersTotal()` hand back the whole
+terminal. Matching on magic alone made a chart adopt another chart's trade: the ETH panel
+once showed the BTC order, and tried to cancel it (`retcode 10013`, invalid request - the
+broker refused, but it should never have been asked). Both finders and both reads in
+`TradeSync` now require `POSITION_SYMBOL` / `ORDER_SYMBOL` to equal `_Symbol`.
+
+A manual trade has no magic and is invisible here - it is never modified, never closed,
+never shown. A position found on another symbol is dropped without being graded, so one
+chart's trade can never appear in another chart's `W`/`L`.
