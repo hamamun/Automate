@@ -429,6 +429,10 @@ In the **Experts** tab:
 
 - **One order per lane, and only the EA's own.** Orders carry a magic number per lane, so
   a manual trade on the same symbol is invisible to it and is never modified or closed.
+- **One chart per symbol.** The EA matches its orders by magic *and* by symbol; two charts
+  on the same symbol would share magic numbers and each would see the other's trade. The
+  diary's exclusive file lock refuses the second one (`Health: off`), but the chart still
+  runs — run this EA on one chart per symbol.
 - **A resting limit can be repriced; a position cannot.** The stop and target go to the
   broker with the order, and an open position is left exactly as the broker holds it.
 - **A cancel is retried, not assumed.** The lane clears only after the broker confirms the

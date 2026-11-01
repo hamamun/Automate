@@ -60,7 +60,7 @@
 //|  diary details, tweak, minimum lot. The rest is measured.      |
 //+------------------------------------------------------------------+
 #property copyright "Automate"
-#property version   "1.50"
+#property version   "1.52"
 #property description "Automate stage 4: self-discovery, market and session status, trend / regime / score / signal per timeframe, a plan per timeframe, the order the EA holds, and a diary that grades every closed trade."
 #property description "Eight switches, and one of them is the master autotrade switch. Attaching sends nothing until a bar has closed; MT5's Algo Trading button has the last word."
 
@@ -3257,6 +3257,32 @@ void TradeRemove(int idx, bool clearIdea = false)
 {
    if(g_tr[idx].state != TS_WAIT || g_tr[idx].ticket == 0) return;
 
+   //  Nothing is sent unless the ticket is an order on this chart's
+   //  symbol.  A foreign ticket is dropped here rather than handed to
+   //  the broker, which could only refuse it (retcode 10013) - that is
+   //  exactly what the ETH chart did with a BTC order.
+   if(!OrderSelect(g_tr[idx].ticket))
+   {
+      //  Already gone: nothing to cancel, nothing to report.
+      g_tr[idx].state  = TS_NONE;
+      g_tr[idx].ticket = 0;
+      g_tr[idx].until  = 0;
+      return;
+   }
+
+   if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+   {
+      PrintFormat("%s: dropping order %s, it is on %s, not %s", g_lane[idx].name,
+                  IntegerToString((long)g_tr[idx].ticket),
+                  OrderGetString(ORDER_SYMBOL), _Symbol);
+      g_tr[idx].state    = TS_NONE;
+      g_tr[idx].ticket   = 0;
+      g_tr[idx].until    = 0;
+      g_tr[idx].atTrend  = 0;
+      g_tr[idx].atSignal = 0;
+      return;
+   }
+
    MqlTradeRequest req;
    MqlTradeResult  res;
    ZeroMemory(req);
@@ -3285,12 +3311,19 @@ void TradeRemove(int idx, bool clearIdea = false)
    PrintFormat("%s: cancel not confirmed (%d)", g_lane[idx].name, res.retcode);
 }
 
+//  The magic says which lane, but not which symbol: every chart runs
+//  the same code and the same magic numbers.  PositionsTotal() and
+//  OrdersTotal() return the whole terminal, so a search that only
+//  compares magic finds another chart's trade and this chart then
+//  reports somebody else's order as its own.  The symbol has to be part
+//  of the test.
 ulong FindLanePosition(int idx)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong t = PositionGetTicket(i);
       if(t == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) == (long)LaneMagic(idx)) return(t);
    }
    return(0);
@@ -3324,12 +3357,24 @@ void TradeAdopt(int idx)
    g_tr[idx].atSignal = g_lane[idx].signal;
 }
 
+//  Never ask the broker to touch an order that is not ours.  Also the
+//  last line of defence: if a stale ticket ever points at another
+//  symbol, this says so instead of sending a request that can only be
+//  refused (retcode 10013).
+bool LaneOrderOurs(ulong ticket)
+{
+   if(ticket == 0) return(false);
+   if(!OrderSelect(ticket)) return(false);
+   return(OrderGetString(ORDER_SYMBOL) == _Symbol);
+}
+
 ulong FindLaneOrder(int idx)
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong t = OrderGetTicket(i);
       if(t == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
       if(OrderGetInteger(ORDER_MAGIC) == (long)LaneMagic(idx)) return(t);
    }
    return(0);
@@ -3384,7 +3429,29 @@ void TradeSync(int idx)
          return;
       }
 
-      if(!PositionSelectByTicket(g_tr[idx].ticket))
+      bool here = PositionSelectByTicket(g_tr[idx].ticket);
+      bool ours = (here && PositionGetString(POSITION_SYMBOL) == _Symbol);
+
+      //  Resolves to another symbol: it was never one of ours, so forget
+      //  it.  Grading it here would put somebody else's trade in this
+      //  chart's diary, and holding the idea as spent would stop this
+      //  lane trading its own plan.
+      if(here && !ours)
+      {
+         PrintFormat("%s: dropping position %s, it is on %s, not %s",
+                     g_lane[idx].name, IntegerToString((long)g_tr[idx].ticket),
+                     PositionGetString(POSITION_SYMBOL), _Symbol);
+         g_tr[idx].state    = TS_NONE;
+         g_tr[idx].ticket   = 0;
+         g_tr[idx].pnl      = 0.0;
+         g_tr[idx].atTrend  = 0;
+         g_tr[idx].atSignal = 0;
+         return;
+      }
+
+      //  Gone entirely: it closed while we were watching, so it is
+      //  graded.
+      if(!here)
       {
          //  Closed.  The trade is offered to the diary before the
          //  record of it is cleared, so the grade carries the side and
@@ -3417,7 +3484,10 @@ void TradeSync(int idx)
 
    if(g_tr[idx].state == TS_WAIT)
    {
-      if(OrderSelect(g_tr[idx].ticket))
+      bool here = OrderSelect(g_tr[idx].ticket);
+      bool ours = (here && OrderGetString(ORDER_SYMBOL) == _Symbol);
+
+      if(ours)
       {
          g_tr[idx].entry = OrderGetDouble(ORDER_PRICE_OPEN);
          g_tr[idx].sl    = OrderGetDouble(ORDER_SL);
@@ -3426,7 +3496,23 @@ void TradeSync(int idx)
          return;
       }
 
-      //  The order is gone: it either filled or was removed elsewhere.
+      //  Resolves to another symbol: it was never this lane's order, so
+      //  forget it.  Saying "gone" here is what made a foreign order
+      //  look like one of ours that had filled.
+      if(here && !ours)
+      {
+         PrintFormat("%s: dropping order %s, it is on %s, not %s", g_lane[idx].name,
+                     IntegerToString((long)g_tr[idx].ticket),
+                     OrderGetString(ORDER_SYMBOL), _Symbol);
+         g_tr[idx].ticket   = 0;
+         g_tr[idx].state    = TS_NONE;
+         g_tr[idx].atTrend  = 0;
+         g_tr[idx].atSignal = 0;
+         return;
+      }
+
+      //  The order is gone: it either filled here or was removed
+      //  elsewhere.  Adopt this chart's position if there is one.
       PrintFormat("%s: waiting order %s is gone",
                   g_lane[idx].name, IntegerToString((long)g_tr[idx].ticket));
       g_tr[idx].ticket = 0;
@@ -3502,6 +3588,12 @@ bool TradeModify(int idx)
 {
    if(g_tr[idx].state != TS_WAIT || g_tr[idx].ticket == 0) return(false);
    if(!g_plan[idx].ok) return(false);
+   if(!LaneOrderOurs(g_tr[idx].ticket))
+   {
+      PrintFormat("%s: not repricing %s, it is not an order on %s",
+                  g_lane[idx].name, IntegerToString((long)g_tr[idx].ticket), _Symbol);
+      return(false);
+   }
 
    MqlTradeRequest req;
    MqlTradeResult  res;
@@ -4851,11 +4943,16 @@ void Heartbeat()
 
    UpdateLanes();
    LogLanes();
-   TradeRefresh();
 
    ulong ms = GetTickCount();
    if(lastDraw != 0 && (ms - lastDraw) < DRAW_MIN_MS) return;
    lastDraw = ms;
+
+   //  The order state is read at the panel's own beat, not on every
+   //  tick: one read a second is what a table a human reads needs, and
+   //  it keeps the terminal scans off the tick path.  A fill or a close
+   //  still shows up within a second.
+   TradeRefresh();
 
    BuildPanel();
    DrawPanel();
